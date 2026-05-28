@@ -61,18 +61,19 @@ class ModuleInspector:
                 continue
 
             value: Any = getattr(module, name)
-            annotation, needs_refinement = infer_annotation(value)
+            result = infer_annotation(value)
 
             fields.append(
                 DiscoveredField(
                     name=name,
-                    type_annotation=annotation,
+                    type_annotation=result.annotation,
                     default=value,
                     description="",
                     required=False,
                     source_module=source,
                     dev_only=False,
-                    needs_refinement=needs_refinement,
+                    needs_refinement=result.needs_refinement,
+                    value_kind=result.value_kind,
                 )
             )
 

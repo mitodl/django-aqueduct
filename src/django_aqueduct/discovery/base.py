@@ -1,6 +1,7 @@
 """Base types for settings discovery."""
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 
@@ -31,6 +32,36 @@ class DiscoveredField:
     source_module: str
     dev_only: bool
     needs_refinement: bool = field(default=False)
+    value_kind: "ValueKind" = field(default_factory=lambda: ValueKind.STATIC)
+
+
+class ValueKind(str, Enum):  # noqa: FURB189, UP042
+    """Semantic classification of a settings value's runtime representation.
+
+    The kind is used by the code generator to decide how to render the
+    default and which comments or TODO markers to emit.
+
+    Attributes:
+        STATIC: A JSON-serializable primitive, list, dict, or ``None``.
+            These values can be rendered as Python literals and used
+            directly as Pydantic ``Field`` defaults.
+        OPAQUE: A Python-native type that cannot be represented in JSON
+            (``tuple``, ``set``, ``frozenset``).  Can usually be rendered
+            via ``repr()``, but the generated type annotation requires
+            review.
+        CALLABLE: A function, lambda, class, or bound method.  Cannot
+            be stored as a Pydantic field default; the generator emits
+            ``default=None`` and a comment pointing to the original name.
+        DERIVED: A lazy proxy that is computed at runtime from other
+            settings (e.g. ``openedx.core.lib.derived.Derived``).  The
+            generator emits ``default=None`` and a comment advising the
+            developer to reproduce the logic in a ``@model_validator``.
+    """
+
+    STATIC = "static"
+    OPAQUE = "opaque"
+    CALLABLE = "callable"
+    DERIVED = "derived"
 
 
 @runtime_checkable

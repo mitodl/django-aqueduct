@@ -9,6 +9,7 @@ This inspector is part of the ``[mitol]`` optional extra. It requires
 from typing import TYPE_CHECKING, Any
 
 from django_aqueduct.discovery.base import DiscoveredField
+from django_aqueduct.discovery.type_inference import InferenceResult
 
 if TYPE_CHECKING:
     from mitol.common.envs import EnvParser  # pragma: no cover
@@ -43,28 +44,17 @@ def _load_env_parser() -> "EnvParser":
         ) from exc
 
 
-def _annotation_for_var(env_var: Any) -> tuple[str, bool]:
-    """Return the annotation string and needs_refinement flag for an EnvVariable.
-
-    The parser function name is not stored directly on EnvVariable, so we
-    infer the type from the runtime value as a fallback, then override with
-    a precise annotation when we can identify the parser by checking which
-    typed accessor was used (stored in _configured_vars metadata).
-
-    In practice callers pass the raw EnvVariable and we check the value type
-    since EnvVariable is a NamedTuple without parser metadata.  The value
-    field already holds the parsed (typed) value, so standard type inference
-    gives us the right result for bool/int/str.  list/dict need the parser
-    name which we don't have here, so we fall back to list[Any]/dict[str,Any].
+def _annotation_for_var(env_var: Any) -> InferenceResult:
+    """Return the InferenceResult for an EnvVariable.
 
     Args:
         env_var: An ``EnvVariable`` namedtuple instance.
 
     Returns:
-        A 2-tuple of annotation string and needs_refinement flag.
+        An :class:`~django_aqueduct.discovery.type_inference.InferenceResult`.
     """
-    from django_aqueduct.discovery.type_inference import (
-        infer_annotation,  # noqa: PLC0415
+    from django_aqueduct.discovery.type_inference import (  # noqa: PLC0415
+        infer_annotation,
     )
 
     return infer_annotation(
@@ -114,18 +104,19 @@ class EnvParserInspector:
         fields: list[DiscoveredField] = []
         for name in sorted(configured):
             env_var = configured[name]
-            annotation, needs_refinement = _annotation_for_var(env_var)
+            result = _annotation_for_var(env_var)
 
             fields.append(
                 DiscoveredField(
                     name=name,
-                    type_annotation=annotation,
+                    type_annotation=result.annotation,
                     default=env_var.default,
                     description=env_var.description,
                     required=env_var.required,
                     source_module=self._source_module,
                     dev_only=env_var.dev_only,
-                    needs_refinement=needs_refinement,
+                    needs_refinement=result.needs_refinement,
+                    value_kind=result.value_kind,
                 )
             )
 

@@ -1,55 +1,108 @@
 """Tests for type_inference.infer_annotation."""
 
+from __future__ import annotations
+
+import pathlib
+
 import pytest
 
-from django_aqueduct.discovery.type_inference import infer_annotation
+from django_aqueduct.discovery.base import ValueKind
+from django_aqueduct.discovery.type_inference import InferenceResult, infer_annotation
 
 
 class _CustomType:
     """Unrecognised type for testing the fallback branch."""
 
 
+def _fn() -> None:
+    """Named function for testing CALLABLE detection."""
+
+
 @pytest.mark.parametrize(
-    ("value", "expected_annotation", "expected_refinement"),
+    ("value", "expected_annotation", "expected_refinement", "expected_kind"),
     [
-        # Primitives
-        (True, "bool", False),
-        (False, "bool", False),
-        (42, "int", False),
-        (0, "int", False),
-        (3.14, "float", False),
-        (0.0, "float", False),
-        ("hello", "str", False),
-        ("", "str", False),
-        # Containers
-        ([], "list[Any]", False),
-        ([1, 2, 3], "list[Any]", False),
-        ({}, "dict[str, Any]", False),
-        ({"a": 1}, "dict[str, Any]", False),
-        # None → needs refinement
-        (None, "Any", True),
-        # Unrecognised types → needs refinement
-        ({1, 2, 3}, "Any", True),
-        (_CustomType(), "Any", True),
+        # ---- primitives ----
+        (True, "bool", False, ValueKind.STATIC),
+        (False, "bool", False, ValueKind.STATIC),
+        (42, "int", False, ValueKind.STATIC),
+        (0, "int", False, ValueKind.STATIC),
+        (3.14, "float", False, ValueKind.STATIC),
+        (0.0, "float", False, ValueKind.STATIC),
+        ("hello", "str", False, ValueKind.STATIC),
+        ("", "str", False, ValueKind.STATIC),
+        # ---- pathlib.Path → str (no pathlib import needed in generated file) ----
+        (pathlib.Path("/var/data"), "str", False, ValueKind.STATIC),
+        (pathlib.PurePosixPath("/etc/config"), "str", False, ValueKind.STATIC),
+        # ---- None → optional sentinel ----
+        (None, "Any", True, ValueKind.STATIC),
+        # ---- JSON-serialisable containers ----
+        ([], "list[Any]", False, ValueKind.STATIC),
+        ([1, 2, 3], "list[Any]", False, ValueKind.STATIC),
+        ({}, "dict[str, Any]", False, ValueKind.STATIC),
+        ({"a": 1}, "dict[str, Any]", False, ValueKind.STATIC),
+        # ---- OPAQUE containers ----
+        ((1, 2), "tuple[Any, ...]", True, ValueKind.OPAQUE),
+        ((), "tuple[Any, ...]", True, ValueKind.OPAQUE),
+        (("a", "b"), "tuple[Any, ...]", True, ValueKind.OPAQUE),
+        ({1, 2, 3}, "set[Any]", True, ValueKind.OPAQUE),
+        (frozenset({1}), "set[Any]", True, ValueKind.OPAQUE),
+        # ---- CALLABLE values ----
+        (_fn, "Any", True, ValueKind.CALLABLE),
+        (lambda: None, "Any", True, ValueKind.CALLABLE),
+        (int, "Any", True, ValueKind.CALLABLE),  # class object
+        (list, "Any", True, ValueKind.CALLABLE),  # built-in class
+        # ---- Unrecognised custom class → OPAQUE ----
+        (_CustomType(), "Any", True, ValueKind.OPAQUE),
     ],
 )
 def test_infer_annotation(
     value: object,
     expected_annotation: str,
     expected_refinement: bool,
+    expected_kind: ValueKind,
 ) -> None:
-    """infer_annotation returns correct annotation and refinement flag."""
-    annotation, needs_refinement = infer_annotation(value)
-    assert annotation == expected_annotation
-    assert needs_refinement is expected_refinement
+    """infer_annotation returns correct annotation, refinement flag, and kind."""
+    result = infer_annotation(value)
+    assert result.annotation == expected_annotation
+    assert result.needs_refinement is expected_refinement
+    assert result.value_kind is expected_kind
 
 
-def test_bool_before_int():
+def test_result_is_named_tuple() -> None:
+    """InferenceResult is a NamedTuple with the expected fields."""
+    result = infer_annotation("hello")
+    assert isinstance(result, InferenceResult)
+    assert result.annotation == "str"
+    assert result.needs_refinement is False
+    assert result.value_kind is ValueKind.STATIC
+
+
+def test_bool_before_int() -> None:
     """bool is correctly distinguished from int (bool is a subclass of int)."""
-    annotation, needs_refinement = infer_annotation(True)
-    assert annotation == "bool"
-    assert needs_refinement is False
+    result_true = infer_annotation(True)
+    assert result_true.annotation == "bool"
+    assert result_true.value_kind is ValueKind.STATIC
 
-    annotation, needs_refinement = infer_annotation(1)
-    assert annotation == "int"
-    assert needs_refinement is False
+    result_int = infer_annotation(1)
+    assert result_int.annotation == "int"
+    assert result_int.value_kind is ValueKind.STATIC
+
+
+def test_derived_proxy_detection() -> None:
+    """Objects whose repr matches '<ClassName object at 0x...>' are DERIVED."""
+
+    class _FakeDerived:
+        def __repr__(self) -> str:
+            return f"<FakeDerived object at 0x{id(self):x}>"
+
+    result = infer_annotation(_FakeDerived())
+    assert result.value_kind is ValueKind.DERIVED
+    assert result.annotation == "Any"
+    assert result.needs_refinement is True
+
+
+def test_path_subclass() -> None:
+    """pathlib.PurePath subclasses (PosixPath, WindowsPath) are STATIC str."""
+    result = infer_annotation(pathlib.PurePosixPath("/etc"))
+    assert result.annotation == "str"
+    assert result.value_kind is ValueKind.STATIC

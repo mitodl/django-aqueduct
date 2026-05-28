@@ -15,10 +15,14 @@ EXPECTED_FIELDS = {
     "ALLOWED_HOSTS": ("list[Any]", False),
     "CACHES": ("dict[str, Any]", False),
     "OPTIONAL_SETTING": ("Any", True),
+    # Added in extended fixture
+    "SECURE_PROXY_HEADER": ("tuple[Any, ...]", True),
+    "EXCLUDED_FIELDS": ("set[Any]", True),
+    "DATA_DIR": ("str", False),  # pathlib.Path → str
 }
 
 
-def test_discovers_all_uppercase_names():
+def test_discovers_all_uppercase_names() -> None:
     """ModuleInspector finds every UPPERCASE name in the fixture module."""
     inspector = ModuleInspector("fixture_settings")
     fields = inspector.discover()
@@ -26,7 +30,7 @@ def test_discovers_all_uppercase_names():
     assert discovered_names == set(EXPECTED_FIELDS)
 
 
-def test_correct_type_annotations():
+def test_correct_type_annotations() -> None:
     """Each field has the expected type annotation."""
     inspector = ModuleInspector("fixture_settings")
     fields = {f.name: f for f in inspector.discover()}
@@ -37,7 +41,7 @@ def test_correct_type_annotations():
         )
 
 
-def test_correct_needs_refinement():
+def test_correct_needs_refinement() -> None:
     """needs_refinement is True only for None-valued names."""
     inspector = ModuleInspector("fixture_settings")
     fields = {f.name: f for f in inspector.discover()}
@@ -47,7 +51,7 @@ def test_correct_needs_refinement():
         )
 
 
-def test_source_module_is_set():
+def test_source_module_is_set() -> None:
     """source_module is the module's __name__."""
     inspector = ModuleInspector("fixture_settings")
     fields = inspector.discover()
@@ -55,7 +59,7 @@ def test_source_module_is_set():
         assert f.source_module == "fixture_settings"
 
 
-def test_excludes_non_uppercase_names():
+def test_excludes_non_uppercase_names() -> None:
     """Private and mixed-case names are not included."""
     inspector = ModuleInspector("fixture_settings")
     fields = inspector.discover()
@@ -64,14 +68,14 @@ def test_excludes_non_uppercase_names():
     assert "not_uppercase" not in names
 
 
-def test_import_error_on_bad_module():
+def test_import_error_on_bad_module() -> None:
     """ImportError is raised with an actionable message for missing modules."""
     inspector = ModuleInspector("this.module.does.not.exist")
     with pytest.raises(ImportError, match="this.module.does.not.exist"):
         inspector.discover()
 
 
-def test_sorted_output():
+def test_sorted_output() -> None:
     """Fields are returned in sorted order by name."""
     inspector = ModuleInspector("fixture_settings")
     fields = inspector.discover()

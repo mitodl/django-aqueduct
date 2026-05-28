@@ -1,13 +1,20 @@
 r"""Management command: generate_aqueduct_settings.
 
-Introspects one or more settings sources and emits a typed Pydantic
-``BaseSettings`` scaffold that can be used as the authoritative settings
-interface for any Django project.
+Introspects one or more settings sources and emits either a typed Pydantic
+``BaseSettings`` scaffold or a JSON Schema document that can be used to
+validate Kubernetes ConfigMaps, ``.env`` files, or any external settings
+source.
 
 Usage examples::
 
-    # From a Python settings module
+    # From a Python settings module (Pydantic model)
     python manage.py generate_aqueduct_settings --modules myapp.settings.common
+
+    # JSON Schema for ConfigMap validation
+    python manage.py generate_aqueduct_settings \\
+        --modules myapp.settings \\
+        --format jsonschema \\
+        --output settings.schema.json
 
     # Multiple modules, write to a file
     python manage.py generate_aqueduct_settings \\
@@ -63,6 +70,17 @@ class Command(BaseCommand):
 
         assert isinstance(parser, ArgumentParser)  # noqa: S101
         parser.add_argument(
+            "--format",
+            choices=["python", "jsonschema"],
+            default="python",
+            help=(
+                "Output format. "
+                "'python' (default) emits a Pydantic BaseSettings scaffold. "
+                "'jsonschema' emits a JSON Schema document suitable for "
+                "validating Kubernetes ConfigMaps or environment variables."
+            ),
+        )
+        parser.add_argument(
             "--modules",
             type=str,
             default="",
@@ -92,6 +110,7 @@ class Command(BaseCommand):
         """Execute the command."""
         modules_str = str(options.get("modules", "") or "")
         output_path = str(options.get("output", "-") or "-")
+        output_format = str(options.get("format", "python") or "python")
         include_envparser: bool | None = options.get("include_envparser")  # type: ignore[assignment]
 
         # Resolve --include-envparser auto-detection
@@ -128,7 +147,16 @@ class Command(BaseCommand):
                 )
             )
 
-        output = SettingsModelGenerator(fields).render()
+        if output_format == "jsonschema":
+            import json  # noqa: PLC0415
+
+            from django_aqueduct.codegen.schema_generator import (  # noqa: PLC0415
+                SchemaGenerator,
+            )
+
+            output = json.dumps(SchemaGenerator(fields).generate(), indent=2)
+        else:
+            output = SettingsModelGenerator(fields).render()
 
         if output_path == "-":
             self.stdout.write(output, ending="")
