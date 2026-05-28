@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install prek
+        run: pip install prek
+      - name: Run prek
+        run: prek run --all-files
+
+  typecheck:
+    name: Type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Install dependencies
+        run: uv sync --all-extras
+      - name: Run mypy
+        run: uv run mypy src/django_aqueduct
+
+  test:
+    name: "Test / Python ${{ matrix.python-version }} / Django ${{ matrix.django-version }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+        django-version: ["5.0", "5.1", "5.2", "6.x"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Override Django version
+        run: |
+          if [ "${{ matrix.django-version }}" = "6.x" ]; then
+            uv pip install "django>=6.0,<7.0"
+          else
+            uv pip install "django~=${{ matrix.django-version }}.0"
+          fi
+
+      - name: Run tests
+        run: uv run pytest tests/ --tb=short -q

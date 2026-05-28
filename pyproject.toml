@@ -1,0 +1,85 @@
+[project]
+name = "django-aqueduct"
+version = "2025.5.28"
+description = "Structured, typed, auditable Django settings management powered by Pydantic"
+license = "BSD-3-Clause"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+  { name = "MIT Open Learning Engineering", email = "odl-devops@mit.edu" },
+]
+keywords = ["django", "settings", "pydantic", "configuration", "kubernetes", "vault"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Framework :: Django",
+  "Framework :: Django :: 5.0",
+  "Framework :: Django :: 5.1",
+  "Framework :: Django :: 5.2",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: BSD License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Internet :: WWW/HTTP",
+]
+dependencies = [
+  "django>=5.0",
+  "pydantic>=2.0",
+  "pydantic-settings>=2.0",
+]
+
+[project.optional-dependencies]
+vault = ["hvac>=2.0"]
+aws = ["boto3>=1.26"]
+mitol = ["mitol-django-common>=2023.1.1"]
+
+[project.urls]
+Homepage = "https://github.com/mitodl/django-aqueduct"
+Repository = "https://github.com/mitodl/django-aqueduct"
+Issues = "https://github.com/mitodl/django-aqueduct/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/django_aqueduct"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/django_aqueduct", "README.md", "LICENSE", "CHANGELOG.md"]
+
+[dependency-groups]
+dev = [
+  "boto3>=1.26",
+  "django-stubs[compatible-mypy]>=5.0",
+  "hvac>=2.0",
+  "mypy>=1.10",
+  "pytest>=8.0",
+  "pytest-django>=4.8",
+  "pytest-mock>=3.14",
+  "ruff>=0.4",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "testapp", "."]
+DJANGO_SETTINGS_MODULE = "testapp.settings"
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "S", "B", "C4", "D"]
+ignore = ["D100", "D104", "D203", "D213"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S105", "S106", "S603", "D"]
+"testapp/*" = ["S", "D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true
