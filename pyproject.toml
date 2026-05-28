@@ -1,6 +1,6 @@
 [project]
 name = "django-aqueduct"
-version = "2025.5.28"
+version = "0.1.0"
 description = "Structured, typed, auditable Django settings management powered by Pydantic"
 license = "BSD-3-Clause"
 readme = "README.md"
