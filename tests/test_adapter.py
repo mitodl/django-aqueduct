@@ -2,8 +2,12 @@
 
 import subprocess
 import sys
+from pathlib import Path
 
 from pydantic_settings import BaseSettings
+
+# Repo root — works both locally and in CI where cwd is the checkout directory
+_REPO_ROOT = Path(__file__).parent.parent
 
 
 class _SimpleSettings(BaseSettings):
@@ -49,9 +53,9 @@ def test_configure_django_settings_respects_env(monkeypatch):
 def test_configure_django_settings_caller_globals():
     """configure_django_settings with no scope argument writes to caller globals."""
     # We test this by executing in a subprocess to avoid polluting the test process.
-    code = """
+    code = f"""
 import sys
-sys.path.insert(0, "src")
+sys.path.insert(0, {str(_REPO_ROOT / "src")!r})
 from pydantic_settings import BaseSettings
 
 class S(BaseSettings):
@@ -59,14 +63,14 @@ class S(BaseSettings):
 
 from django_aqueduct.adapter import configure_django_settings
 configure_django_settings(S)
-assert MY_KEY == "hello", f"Expected 'hello', got {MY_KEY!r}"
+assert MY_KEY == "hello", f"Expected 'hello', got {{MY_KEY!r}}"
 print("OK")
 """
     result = subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
-        cwd="/home/tmacey/code/mit/apps/maintained/django-aqueduct",
+        cwd=str(_REPO_ROOT),
     )
     assert result.returncode == 0, result.stderr
     assert "OK" in result.stdout
@@ -94,12 +98,12 @@ from django.conf import settings
 assert settings.SECRET_KEY == "prog-secret", settings.SECRET_KEY
 print("OK")
 """
-    env = {"PYTHONPATH": "src"}
+    env = {"PYTHONPATH": str(_REPO_ROOT / "src")}
     result = subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
-        cwd="/home/tmacey/code/mit/apps/maintained/django-aqueduct",
+        cwd=str(_REPO_ROOT),
         env=env,
     )
     assert result.returncode == 0, result.stderr
