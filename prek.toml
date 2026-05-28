@@ -1,0 +1,82 @@
+# prek.toml — pre-commit hook configuration
+# Docs: https://prek.j178.dev
+#
+# Install hooks:      prek install
+# Run on all files:   prek run --all-files
+# Update pinned revs: prek auto-update
+
+# ── Built-in: fast Rust-native checks (priority 0) ────────────────────────────
+
+[[repos]]
+repo = "builtin"
+
+[[repos.hooks]]
+id = "trailing-whitespace"
+priority = 0
+
+[[repos.hooks]]
+id = "end-of-file-fixer"
+priority = 0
+
+[[repos.hooks]]
+id = "check-merge-conflict"
+priority = 0
+
+[[repos.hooks]]
+id = "check-case-conflict"
+priority = 0
+
+[[repos.hooks]]
+id = "check-added-large-files"
+priority = 0
+
+[[repos.hooks]]
+id = "check-toml"
+priority = 0
+
+[[repos.hooks]]
+id = "check-yaml"
+priority = 0
+
+[[repos.hooks]]
+id = "check-json"
+priority = 0
+
+[[repos.hooks]]
+id = "detect-private-key"
+priority = 0
+
+# ── Shell: shellcheck (priority 10) ───────────────────────────────────────────
+
+[[repos]]
+repo = "https://github.com/shellcheck-py/shellcheck-py"
+rev = "v0.11.0.1"
+hooks = [{ id = "shellcheck", priority = 10 }]
+
+# ── Secrets: gitleaks (priority 10, parallel with shellcheck) ─────────────────
+
+[[repos]]
+repo = "https://github.com/gitleaks/gitleaks"
+rev = "v8.30.1"
+hooks = [{ id = "gitleaks", priority = 10 }]
+
+# ── GitHub Actions: actionlint (priority 10) ──────────────────────────────────
+
+[[repos]]
+repo = "https://github.com/rhysd/actionlint"
+rev = "v1.7.7"
+hooks = [{ id = "actionlint", priority = 10 }]
+
+# ── Python: ruff (priority 20 format → 30 lint) ───────────────────────────────
+
+[[repos]]
+repo = "https://github.com/astral-sh/ruff-pre-commit"
+rev = "v0.11.13"
+
+[[repos.hooks]]
+id = "ruff-format"
+priority = 20
+
+[[repos.hooks]]
+id = "ruff"
+priority = 30
