@@ -212,7 +212,7 @@ def _build_genson_schema(value: Any) -> dict[str, Any] | None:
         builder.add_object(value)
         schema = builder.to_schema()
         schema.pop("$schema", None)
-        return schema  # type: ignore[return-value]
+        return schema  # type: ignore[no-any-return]
     except Exception:  # noqa: BLE001, S110
         return None
 
