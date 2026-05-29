@@ -33,6 +33,14 @@ class DiscoveredField:
     dev_only: bool
     needs_refinement: bool = field(default=False)
     value_kind: "ValueKind" = field(default_factory=lambda: ValueKind.STATIC)
+    owning_package: str = field(default="")
+    """PyPI distribution name of the package that owns this setting.
+
+    Populated by
+    :class:`~django_aqueduct.discovery.package_attributor.PackageAttributor`
+    when ``--attribute-packages`` is passed to the management command.  An
+    empty string means the setting has not been attributed yet.
+    """
 
 
 class ValueKind(str, Enum):  # noqa: FURB189, UP042

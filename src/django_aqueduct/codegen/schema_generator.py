@@ -175,6 +175,8 @@ class SchemaGenerator:
 
             # x-aqueduct extensions for tooling
             prop["x-aqueduct-source"] = f.source_module
+            if f.owning_package:
+                prop["x-aqueduct-package"] = f.owning_package
             if f.value_kind != ValueKind.STATIC:
                 prop["x-aqueduct-value-kind"] = f.value_kind.value
             if f.needs_refinement:

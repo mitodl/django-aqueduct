@@ -105,6 +105,19 @@ class Command(BaseCommand):
                 "a mitol app is in INSTALLED_APPS."
             ),
         )
+        parser.add_argument(
+            "--attribute-packages",
+            action="store_true",
+            default=False,
+            help=(
+                "Attribute each setting to its owning Python package and "
+                "group the output by package instead of source module. "
+                "Uses five strategies in priority order: Django core, "
+                "callable inspection, Celery/DRF built-in APIs, AST scan "
+                "of installed packages, and a static prefix table. "
+                "Requires Django to be configured for the AST scan step."
+            ),
+        )
 
     def handle(self, *args: object, **options: object) -> None:
         """Execute the command."""
@@ -146,6 +159,24 @@ class Command(BaseCommand):
                     "Specify --modules or --include-envparser."
                 )
             )
+
+        # --attribute-packages: populate owning_package on every field
+        if options.get("attribute_packages"):
+            from django_aqueduct.discovery.package_attributor import (  # noqa: PLC0415
+                PackageAttributor,
+            )
+
+            try:
+                from django.apps import apps as django_apps  # noqa: PLC0415
+
+                installed_apps = [a.name for a in django_apps.get_app_configs()]
+            except Exception:  # noqa: BLE001
+                installed_apps = []
+
+            attributor = PackageAttributor(installed_apps=installed_apps)
+            attribution = attributor.attribute(fields)
+            for f in fields:
+                f.owning_package = attribution.get(f.name, "project")
 
         if output_format == "jsonschema":
             import json  # noqa: PLC0415

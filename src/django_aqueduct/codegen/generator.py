@@ -290,9 +290,11 @@ class SettingsModelGenerator:
     def render(self) -> str:
         """Render the complete ``settings_model.py`` file as a string.
 
-        Fields are grouped by ``source_module`` under section comments.
-        Within each group fields appear in the order they were supplied
-        (callers should sort before passing if determinism matters).
+        When ``owning_package`` is populated on any field (via
+        :class:`~django_aqueduct.discovery.package_attributor.PackageAttributor`)
+        fields are grouped by package instead of source module.  The group
+        order is: ``django`` first, third-party packages alphabetically,
+        ``project`` last.
 
         When ``genson`` is available, dict-valued fields with
         JSON-serialisable defaults are enriched: the annotation is
@@ -353,13 +355,33 @@ class SettingsModelGenerator:
 
         lines.append(_CLASS_OPEN)
 
-        # Field groups by source module
+        # ---------------------------------------------------------------- #
+        # Phase 3: group fields and emit section bodies                   #
+        # ---------------------------------------------------------------- #
+        # Use owning_package when attribution has been run; fall back to
+        # source_module for backward-compatible behaviour.
+        use_package_groups = any(f.owning_package for f in self._fields)
+
+        def _group_key(f: DiscoveredField) -> str:
+            if use_package_groups:
+                return f.owning_package or f.source_module
+            return f.source_module
+
+        def _group_sort_key(group_name: str) -> tuple[int, str]:
+            """Django first, project last, rest alphabetically."""
+            if group_name == "django":
+                return (0, "")
+            if group_name == "project":
+                return (2, "")
+            return (1, group_name)
+
         groups: dict[str, list[DiscoveredField]] = defaultdict(list)
         for f in self._fields:
-            groups[f.source_module].append(f)
+            groups[_group_key(f)].append(f)
 
-        for module_name, module_fields in groups.items():
-            lines.append(f"    # ===== {module_name} =====\n")
+        for group_name in sorted(groups, key=_group_sort_key):
+            module_fields = groups[group_name]
+            lines.append(f"    # ===== {group_name} =====\n")
             for f in module_fields:
                 annotation_override = enriched_annotations.get(f.name)
                 lines.append(
