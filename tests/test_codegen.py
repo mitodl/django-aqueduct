@@ -261,6 +261,60 @@ def test_set_default_uses_factory() -> None:
 
 
 # ------------------------------------------------------------------ #
+# None-default annotations must be Optional                            #
+# ------------------------------------------------------------------ #
+
+
+def test_opaque_dict_with_class_refs_is_optional() -> None:
+    """An OPAQUE dict that falls back to default=None gets a `| None` annotation.
+
+    Regression test for the JWT_AUTH / CELERYBEAT_SCHEDULE boot crash: the
+    dict default contained a non-serialisable element, so the generator fell
+    back to default=None but previously kept the non-nullable dict[str, Any]
+    annotation, which rejected a None value at instantiation.
+    """
+    fields = [
+        _make_field(
+            "JWT_AUTH",
+            "dict[str, Any]",
+            {"JWT_ISSUER": "x", "JWT_AUTH_COOKIE": str},  # class ref → repr has '<'
+            value_kind=ValueKind.STATIC,
+        )
+    ]
+    output = SettingsModelGenerator(fields).render()
+    assert "default=None" in output
+    assert "dict[str, Any] | None" in output
+    ast.parse(output)
+
+
+def test_optional_dict_annotation_not_double_wrapped() -> None:
+    """An annotation that already permits None is not widened again."""
+    from django_aqueduct.codegen.generator import _nullable_annotation
+
+    assert _nullable_annotation("dict[str, Any]") == "dict[str, Any] | None"
+    assert _nullable_annotation("dict[str, Any] | None") == "dict[str, Any] | None"
+    assert _nullable_annotation("Any") == "Any"
+    assert _nullable_annotation("Optional[str]") == "Optional[str]"
+
+
+def test_derived_and_callable_annotations_accept_none() -> None:
+    """DERIVED/CALLABLE fields (Any) keep an annotation that accepts None."""
+    fields = [
+        _make_field(
+            "COMPUTED",
+            "Any",
+            object(),
+            value_kind=ValueKind.DERIVED,
+        ),
+    ]
+    output = SettingsModelGenerator(fields).render()
+    # `Any` already accepts None — must not become the invalid `Any | None`
+    # is acceptable too, but Any is preferred; assert it parses and is nullable.
+    assert "COMPUTED: Any = Field(default=None)" in output
+    ast.parse(output)
+
+
+# ------------------------------------------------------------------ #
 # genson TypedDict enrichment                                          #
 # ------------------------------------------------------------------ #
 

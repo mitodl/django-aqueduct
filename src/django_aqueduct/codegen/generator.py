@@ -156,6 +156,36 @@ def _repr_default(value: Any) -> tuple[str, bool]:
     return (r, False)
 
 
+def _nullable_annotation(annotation: str) -> str:
+    """Widen *annotation* so that ``None`` is an accepted value.
+
+    Any field rendered with ``default=None`` (DERIVED, CALLABLE, or an
+    OPAQUE value whose ``repr`` could not be serialised) must accept
+    ``None`` at runtime — otherwise a source that supplies ``None`` (or an
+    absent value resolving to ``None``) raises a Pydantic ``ValidationError``
+    at instantiation, before the adapter ever runs.  This was the cause of
+    the ``JWT_AUTH`` / ``CELERYBEAT_SCHEDULE`` boot crashes: their dict
+    defaults contained non-serialisable elements, so the generator fell back
+    to ``default=None`` while keeping the non-nullable ``dict[str, Any]``
+    annotation.
+
+    ``Any`` already accepts ``None`` and an annotation that is already
+    optional is returned unchanged.
+
+    Args:
+        annotation: The rendered type annotation string.
+
+    Returns:
+        The annotation, widened with ``| None`` when necessary.
+    """
+    a = annotation.strip()
+    if a in ("Any", "None"):
+        return a
+    if "None" in a or a.startswith("Optional["):
+        return a
+    return f"{a} | None"
+
+
 def _render_typeddict(td: TypedDictDef) -> str:
     """Render a ``TypedDict`` class definition as a source code string.
 
@@ -243,6 +273,12 @@ def _render_field(
                 default_expr = f"default={default_repr}"
             if f.needs_refinement:
                 suffix = "  # TODO: refine type"
+
+    # A ``default=None`` is only valid if the annotation accepts ``None``.
+    # Widen it so a source supplying ``None`` (or an absent value) validates
+    # cleanly instead of crashing at instantiation.
+    if default_expr == "default=None":
+        annotation = _nullable_annotation(annotation)
 
     # ------------------------------------------------------------------ #
     # Assemble Field() call                                               #

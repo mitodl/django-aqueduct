@@ -3,6 +3,7 @@
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from pydantic_settings import BaseSettings
 
@@ -74,6 +75,76 @@ print("OK")
     )
     assert result.returncode == 0, result.stderr
     assert "OK" in result.stdout
+
+
+class _OverlaySettings(BaseSettings):
+    # Carries a real value — overrides the base.
+    DEBUG: bool = True
+    # Opaque/derived field the generator could not serialise.
+    XBLOCK_MIXINS: Any = None
+    # Absent-from-base field — model contributes it.
+    EXTRA: str = "from-model"
+
+
+def test_overlay_keeps_base_value_when_model_field_absent():
+    """A setting absent from the model falls back to the base value."""
+    from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
+
+    base = {"INSTALLED_APPS": ["django.contrib.auth"], "DEBUG": False}
+    scope: dict = {}
+    configure_django_settings(_OverlaySettings, scope=scope, base=base)
+
+    # INSTALLED_APPS is not a model field → base value survives.
+    assert scope["INSTALLED_APPS"] == ["django.contrib.auth"]
+
+
+def test_overlay_none_does_not_clobber_base():
+    """A model value of None does not overwrite a non-None base value."""
+    from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
+
+    base = {"XBLOCK_MIXINS": ("a", "b"), "DEBUG": False}
+    scope: dict = {}
+    configure_django_settings(_OverlaySettings, scope=scope, base=base)
+
+    # Model's XBLOCK_MIXINS is None → real base tuple is preserved.
+    assert scope["XBLOCK_MIXINS"] == ("a", "b")
+
+
+def test_overlay_model_value_wins_over_base():
+    """A non-None model value overrides the base value."""
+    from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
+
+    base = {"DEBUG": False, "EXTRA": "from-base"}
+    scope: dict = {}
+    configure_django_settings(_OverlaySettings, scope=scope, base=base)
+
+    assert scope["DEBUG"] is True
+    assert scope["EXTRA"] == "from-model"
+
+
+def test_overlay_ignores_lowercase_base_names():
+    """Only UPPERCASE names from the base are carried into the scope."""
+    from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
+
+    base = {"INSTALLED_APPS": ["x"], "helper": "ignored"}
+    scope: dict = {}
+    configure_django_settings(_OverlaySettings, scope=scope, base=base)
+
+    assert "helper" not in scope
+    assert scope["INSTALLED_APPS"] == ["x"]
+
+
+def test_no_base_preserves_replace_behaviour():
+    """Without base=, the model fully replaces the scope (legacy behaviour)."""
+    from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
+
+    scope: dict = {"INSTALLED_APPS": ["pre-existing"]}
+    configure_django_settings(_SimpleSettings, scope=scope)
+
+    # No base → the model dump is applied; unrelated pre-existing keys remain
+    # but no base merge occurs.
+    assert scope["SECRET_KEY"] == "test-secret"
+    assert scope["INSTALLED_APPS"] == ["pre-existing"]
 
 
 def test_configure_django_programmatic():
