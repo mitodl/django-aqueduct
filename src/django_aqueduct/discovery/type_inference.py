@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-import pathlib
+import os
 from typing import Any, NamedTuple
 
 from django_aqueduct.discovery.base import ValueKind
@@ -69,9 +69,10 @@ def infer_annotation(value: Any) -> InferenceResult:
     if isinstance(value, str):
         return InferenceResult("str", False, ValueKind.STATIC)
 
-    # pathlib.Path serialises cleanly as a string
-    if isinstance(value, pathlib.PurePath):
-        return InferenceResult("str", False, ValueKind.STATIC)
+    # Any os.PathLike (pathlib.Path, path.Path, etc.) preserves its type so
+    # callers can continue using the / operator for path concatenation.
+    if isinstance(value, os.PathLike):
+        return InferenceResult("pathlib.Path", False, ValueKind.STATIC)
 
     # None is a valid optional sentinel
     if value is None:

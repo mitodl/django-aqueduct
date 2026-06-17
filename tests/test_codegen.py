@@ -227,20 +227,20 @@ def test_opaque_tuple_with_class_refs_falls_back_to_none() -> None:
     ast.parse(output)
 
 
-def test_path_default_renders_as_string() -> None:
-    """pathlib.Path defaults are emitted as string literals (no pathlib import)."""
+def test_path_default_renders_as_pathlib() -> None:
+    """pathlib.Path defaults are emitted as pathlib.Path(...) so / operator works."""
     import pathlib
 
     fields = [
         _make_field(
             "DATA_DIR",
-            "str",
+            "pathlib.Path",
             pathlib.Path("/var/data"),
         )
     ]
     output = SettingsModelGenerator(fields).render()
-    assert "'/var/data'" in output
-    assert "pathlib" not in output
+    assert "pathlib.Path('/var/data')" in output
+    assert "import pathlib" in output
     ast.parse(output)
 
 

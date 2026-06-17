@@ -18,7 +18,10 @@ EXPECTED_FIELDS = {
     # Added in extended fixture
     "SECURE_PROXY_HEADER": ("tuple[Any, ...]", True),
     "EXCLUDED_FIELDS": ("set[Any]", True),
-    "DATA_DIR": ("str", False),  # pathlib.Path → str
+    "DATA_DIR": (
+        "pathlib.Path",
+        False,
+    ),  # pathlib.Path → pathlib.Path (preserves / operator)
 }
 
 

@@ -87,13 +87,12 @@ def test_new_value_kinds_produce_valid_python(capsys: _Capsys) -> None:
     ast.parse(captured.out)
 
 
-def test_path_default_no_pathlib_import(capsys: _Capsys) -> None:
-    """pathlib.Path defaults are emitted as strings; no 'import pathlib' needed."""
+def test_path_default_renders_as_pathlib(capsys: _Capsys) -> None:
+    """pathlib.Path defaults are emitted as pathlib.Path(...) to preserve / operator."""
     call_command("generate_aqueduct_settings", modules="fixture_settings")
     captured = capsys.readouterr()
-    assert "import pathlib" not in captured.out
-    # The Path value should appear as a string literal
-    assert "'/var/data'" in captured.out
+    assert "import pathlib" in captured.out
+    assert "pathlib.Path('/var/data')" in captured.out
 
 
 # ------------------------------------------------------------------ #

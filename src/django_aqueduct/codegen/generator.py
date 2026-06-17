@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import pathlib
+import os
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
@@ -72,6 +72,7 @@ def _build_header(*, include_typeddict: bool) -> str:
     return (
         f"{_COMMENT_BLOCK}\n"
         f"from __future__ import annotations\n\n"
+        f"import pathlib\n\n"
         f"{typing_line}\n\n"
         f"from pydantic import Field\n"
         f"from pydantic_settings import BaseSettings, SettingsConfigDict\n"
@@ -132,9 +133,10 @@ def _repr_default(value: Any) -> tuple[str, bool]:
         return (repr(value), False)
     if isinstance(value, str):
         return (repr(value), False)
-    if isinstance(value, pathlib.PurePath):
-        # Convert to a plain string literal — avoids importing pathlib
-        return (repr(str(value)), False)
+    if isinstance(value, os.PathLike):
+        # Preserve as pathlib.Path so callers can use the / operator.
+        # os.fspath() extracts the str representation for any PathLike.
+        return (f"pathlib.Path({repr(os.fspath(value))})", False)
     if isinstance(value, list | dict):
         r = _safe_repr(value)
         if r is None:

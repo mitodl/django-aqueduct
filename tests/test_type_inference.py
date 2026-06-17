@@ -30,9 +30,9 @@ def _fn() -> None:
         (0.0, "float", False, ValueKind.STATIC),
         ("hello", "str", False, ValueKind.STATIC),
         ("", "str", False, ValueKind.STATIC),
-        # ---- pathlib.Path → str (no pathlib import needed in generated file) ----
-        (pathlib.Path("/var/data"), "str", False, ValueKind.STATIC),
-        (pathlib.PurePosixPath("/etc/config"), "str", False, ValueKind.STATIC),
+        # ---- os.PathLike → pathlib.Path (preserves / operator for path joining) ----
+        (pathlib.Path("/var/data"), "pathlib.Path", False, ValueKind.STATIC),
+        (pathlib.PurePosixPath("/etc/config"), "pathlib.Path", False, ValueKind.STATIC),
         # ---- None → optional sentinel ----
         (None, "Any", True, ValueKind.STATIC),
         # ---- JSON-serialisable containers ----
@@ -102,7 +102,7 @@ def test_derived_proxy_detection() -> None:
 
 
 def test_path_subclass() -> None:
-    """pathlib.PurePath subclasses (PosixPath, WindowsPath) are STATIC str."""
+    """os.PathLike values (pathlib.Path, PurePosixPath, etc.) are STATIC."""
     result = infer_annotation(pathlib.PurePosixPath("/etc"))
-    assert result.annotation == "str"
+    assert result.annotation == "pathlib.Path"
     assert result.value_kind is ValueKind.STATIC
