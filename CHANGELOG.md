@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0]
+
+### Fixed
+
+- `os.PathLike` settings values (including `pathlib.Path` and `path.Path`) are
+  now annotated as `pathlib.Path` in generated models instead of `str`. The
+  previous `str` annotation caused Pydantic to coerce the default value to a
+  plain string at instantiation, breaking any code that used the `/` operator
+  for path joining (e.g. `settings.PROJECT_ROOT / "static"`). Generated files
+  now include `import pathlib` in their header.
+
 ## [0.4.0]
 
 ### Added
