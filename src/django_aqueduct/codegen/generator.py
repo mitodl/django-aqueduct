@@ -70,8 +70,10 @@ def _build_header(*, include_typeddict: bool) -> str:
     typing_line = f"from typing import {', '.join(sorted(typing_names))}"
 
     return (
+        f"# ruff: noqa\n"
         f"{_COMMENT_BLOCK}\n"
         f"from __future__ import annotations\n\n"
+        f"import datetime\n"
         f"import pathlib\n\n"
         f"{typing_line}\n\n"
         f"from pydantic import Field\n"
@@ -257,6 +259,13 @@ def _render_field(
         callable_name = getattr(f.default, "__name__", type(f.default).__name__)
         default_expr = "default=None"
         suffix = f"  # CALLABLE DEFAULT: {callable_name!r}"
+
+    elif f.value_kind == ValueKind.REDACTED:
+        default_expr = "default=None"
+        suffix = (
+            "  # REDACTED: name looks secret-like; the live value observed"
+            " during generation was NOT written here — set explicitly"
+        )
 
     else:
         # STATIC or OPAQUE

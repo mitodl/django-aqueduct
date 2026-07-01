@@ -21,6 +21,13 @@ def _make_hvac_client(secret_data: dict[str, Any] = _FAKE_SECRET) -> MagicMock:
     return client
 
 
+def _make_kv_v1_hvac_client(secret_data: dict[str, Any] = _FAKE_SECRET) -> MagicMock:
+    """Build a mock hvac.Client that returns *secret_data* from KV v1."""
+    client = MagicMock()
+    client.secrets.kv.v1.read_secret.return_value = {"data": secret_data}
+    return client
+
+
 def _vault_source(**kwargs: Any) -> VaultSettingsSource:
     """Convenience constructor with sensible defaults."""
     return VaultSettingsSource(
@@ -150,6 +157,73 @@ class TestKubernetesAuth:
         assert _DEFAULT_K8S_JWT_PATH == (
             "/var/run/secrets/kubernetes.io/serviceaccount/token"
         )
+
+
+class TestKVVersion:
+    """VaultSettingsSource with kv_version='1' vs the default '2'."""
+
+    def test_kv_v2_is_default(self):
+        """With no kv_version specified, KV v2 API is used."""
+        mock_client = _make_hvac_client()
+        source = _vault_source(auth_method="token", vault_token="t")
+
+        with patch("hvac.Client", return_value=mock_client):
+            result = source()
+
+        mock_client.secrets.kv.v2.read_secret_version.assert_called_once_with(
+            path="myapp/production", mount_point="secret"
+        )
+        mock_client.secrets.kv.v1.read_secret.assert_not_called()
+        assert result == _FAKE_SECRET
+
+    def test_kv_v1_reads_via_v1_api(self):
+        """kv_version='1' calls the KV v1 API and unwraps 'data' once."""
+        mock_client = _make_kv_v1_hvac_client({"SETTING": "value"})
+        source = _vault_source(auth_method="token", vault_token="t", kv_version="1")
+
+        with patch("hvac.Client", return_value=mock_client):
+            result = source()
+
+        mock_client.secrets.kv.v1.read_secret.assert_called_once_with(
+            path="myapp/production", mount_point="secret"
+        )
+        mock_client.secrets.kv.v2.read_secret_version.assert_not_called()
+        assert result == {"SETTING": "value"}
+
+    def test_kv_v1_respects_custom_mount_point(self):
+        """A custom mount_point is passed through to the KV v1 API call."""
+        mock_client = _make_kv_v1_hvac_client()
+        source = _vault_source(
+            auth_method="token",
+            vault_token="t",
+            kv_version="1",
+            mount_point="secret-mitxonline",
+        )
+
+        with patch("hvac.Client", return_value=mock_client):
+            source()
+
+        mock_client.secrets.kv.v1.read_secret.assert_called_once_with(
+            path="myapp/production", mount_point="secret-mitxonline"
+        )
+
+    def test_kv_version_accepts_int(self):
+        """An integer kv_version (e.g. 1) is coerced to the matching string API."""
+        mock_client = _make_kv_v1_hvac_client()
+        source = _vault_source(auth_method="token", vault_token="t", kv_version=1)
+
+        with patch("hvac.Client", return_value=mock_client):
+            source()
+
+        mock_client.secrets.kv.v1.read_secret.assert_called_once_with(
+            path="myapp/production", mount_point="secret"
+        )
+        mock_client.secrets.kv.v2.read_secret_version.assert_not_called()
+
+    def test_invalid_kv_version_raises(self):
+        """An unsupported kv_version raises ValueError at construction time."""
+        with pytest.raises(ValueError, match="kv_version must be '1' or '2'"):
+            _vault_source(auth_method="token", vault_token="t", kv_version="3")
 
 
 class TestImportGuard:

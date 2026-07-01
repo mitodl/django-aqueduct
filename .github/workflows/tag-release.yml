@@ -1,0 +1,38 @@
+name: Tag release
+
+on:
+  push:
+    branches: ["main"]
+    paths: ["pyproject.toml"]
+
+jobs:
+  tag:
+    name: Tag on version bump
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Read version from pyproject.toml
+        id: version
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Tag and push if new
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists, skipping."
+            exit 0
+          fi
+          git tag "$tag"
+          git push origin "$tag"

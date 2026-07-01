@@ -1,10 +1,11 @@
-"""Vault KV v2 settings source for pydantic-settings.
+"""Vault KV v1/v2 settings source for pydantic-settings.
 
 Requires the ``[vault]`` extra::
 
     pip install django-aqueduct[vault]
 
-Supports three authentication methods:
+Supports both Vault KV secrets engine versions (``kv_version="1"`` or
+``"2"``, defaulting to ``"2"``) and three authentication methods:
 
 - ``"token"``   — static Vault token (simplest, not recommended for production)
 - ``"oidc"``    — OIDC/JWT login via a browser callback (interactive or CI)
@@ -68,13 +69,15 @@ def _require_hvac() -> Any:
 
 
 class VaultSettingsSource(PydanticBaseSettingsSource):
-    """Load settings from a Vault KV v2 secret path.
+    """Load settings from a Vault KV v1 or v2 secret path.
 
     Args:
         settings_cls: The settings class (passed automatically by pydantic-settings).
         vault_url: Full URL of the Vault server, e.g. ``"https://vault.example.com"``.
-        vault_path: Path to the KV v2 secret, e.g. ``"myapp/production"``.
-        mount_point: KV v2 mount point. Defaults to ``"secret"``.
+        vault_path: Path to the KV secret, e.g. ``"myapp/production"``.
+        mount_point: KV mount point. Defaults to ``"secret"``.
+        kv_version: KV secrets engine version at *mount_point*, ``"1"`` or
+            ``"2"``. Defaults to ``"2"``.
         auth_method: One of ``"token"``, ``"oidc"``, or ``"kubernetes"``.
         vault_token: Static Vault token. Required when ``auth_method="token"``.
         role: Vault role name. Required for ``"oidc"`` and ``"kubernetes"`` auth.
@@ -94,6 +97,7 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
         vault_url: str,
         vault_path: str,
         mount_point: str = "secret",
+        kv_version: Literal["1", "2"] = "2",
         auth_method: Literal["token", "oidc", "kubernetes"] = "token",
         vault_token: str | None = None,
         role: str | None = None,
@@ -103,9 +107,12 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
     ) -> None:
         """Store configuration for Vault access and authentication."""
         super().__init__(settings_cls)
+        if str(kv_version) not in ("1", "2"):
+            raise ValueError(f"kv_version must be '1' or '2', got {kv_version!r}")
         self._vault_url = vault_url
         self._vault_path = vault_path
         self._mount_point = mount_point
+        self._kv_version = str(kv_version)
         self._auth_method = auth_method
         self._vault_token = vault_token
         self._role = role
@@ -163,6 +170,12 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
         hvac = _require_hvac()
         client = hvac.Client(url=self._vault_url)
         self._authenticate(client)
+        if self._kv_version == "1":
+            response = client.secrets.kv.v1.read_secret(
+                path=self._vault_path,
+                mount_point=self._mount_point,
+            )
+            return dict(response["data"])
         response = client.secrets.kv.v2.read_secret_version(
             path=self._vault_path,
             mount_point=self._mount_point,

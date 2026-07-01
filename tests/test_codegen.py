@@ -193,6 +193,62 @@ def test_callable_field_emits_none_default() -> None:
     ast.parse(output)
 
 
+def test_timedelta_default_is_importable() -> None:
+    """A datetime.timedelta default doesn't NameError when instantiated.
+
+    ``repr(datetime.timedelta(...))`` renders as ``datetime.timedelta(...)``,
+    so the generated module must actually import ``datetime``. ast.parse()
+    alone can't catch a missing import (that's a runtime NameError, not a
+    syntax error), and ``default_factory`` lambdas are only evaluated at
+    instantiation time, not at exec/import time — so the test must actually
+    construct the settings object to exercise the buggy code path.
+    """
+    import datetime
+    import sys
+    import types
+
+    fields = [
+        _make_field(
+            "JWT_AUTH",
+            "dict[str, Any]",
+            {"JWT_EXPIRATION_DELTA": datetime.timedelta(hours=1)},
+            value_kind=ValueKind.STATIC,
+        )
+    ]
+    output = SettingsModelGenerator(fields).render()
+    ast.parse(output)
+
+    module_name = "_aqueduct_codegen_timedelta_test"
+    module = types.ModuleType(module_name)
+    sys.modules[module_name] = module
+    try:
+        exec(compile(output, "<generated>", "exec"), module.__dict__)  # noqa: S102
+        settings = module.AqueductSettings()
+        assert settings.JWT_AUTH == {
+            "JWT_EXPIRATION_DELTA": datetime.timedelta(hours=1)
+        }
+    finally:
+        del sys.modules[module_name]
+
+
+def test_redacted_field_emits_none_default_and_never_the_live_value() -> None:
+    """REDACTED fields render as default=None and never leak the live value."""
+    fields = [
+        _make_field(
+            "SECRET_KEY",
+            "str",
+            "sk_live_super_secret_value_12345",
+            needs_refinement=False,
+            value_kind=ValueKind.REDACTED,
+        )
+    ]
+    output = SettingsModelGenerator(fields).render()
+    assert "default=None" in output
+    assert "REDACTED" in output
+    assert "sk_live_super_secret_value_12345" not in output
+    ast.parse(output)
+
+
 def test_opaque_tuple_without_class_refs() -> None:
     """OPAQUE tuple with a safe repr uses default=(...) directly."""
     fields = [
