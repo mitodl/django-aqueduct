@@ -1,7 +1,11 @@
 """Tests for ModuleInspector."""
 
+import sys
+import types
+
 import pytest
 
+from django_aqueduct.discovery.base import ValueKind
 from django_aqueduct.discovery.module import ModuleInspector
 
 # The known UPPERCASE names and their expected types from testapp/fixture_settings.py
@@ -84,3 +88,60 @@ def test_sorted_output() -> None:
     fields = inspector.discover()
     names = [f.name for f in fields]
     assert names == sorted(names)
+
+
+def test_secret_like_name_is_redacted() -> None:
+    """API_KEY's live value is never captured — its name looks secret-like."""
+    inspector = ModuleInspector("fixture_settings")
+    fields = {f.name: f for f in inspector.discover()}
+    assert fields["API_KEY"].value_kind == ValueKind.REDACTED
+    assert fields["API_KEY"].default is None
+
+
+class TestRedactionCoversRealSecretValues:
+    """A live secret value present in the environment is never written out."""
+
+    @staticmethod
+    def _install_fixture_module(**names: object) -> str:
+        module_name = "_aqueduct_redaction_fixture"
+        module = types.ModuleType(module_name)
+        for name, value in names.items():
+            setattr(module, name, value)
+        sys.modules[module_name] = module
+        return module_name
+
+    def teardown_method(self) -> None:
+        sys.modules.pop("_aqueduct_redaction_fixture", None)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "SECRET_KEY",
+            "DB_PASSWORD",
+            "AUTH_TOKEN",
+            "STRIPE_PRIVATE_KEY",
+            "MAILGUN_API_KEY",
+            "AWS_ACCESS_KEY",
+            "OAUTH_CREDENTIAL",
+            "JWT_SIGNING_KEY",
+            "FIELD_ENCRYPTION_KEY",
+            "SENTRY_DSN",
+        ],
+    )
+    def test_redacts_secret_shaped_names(self, name: str) -> None:
+        """Every marker-matching name is redacted regardless of its live value."""
+        module_name = self._install_fixture_module(
+            **{name: "sk_live_super_secret_value_12345"}
+        )
+        fields = {f.name: f for f in ModuleInspector(module_name).discover()}
+
+        assert fields[name].value_kind == ValueKind.REDACTED
+        assert fields[name].default is None
+
+    def test_non_secret_name_is_not_redacted(self) -> None:
+        """A benign name keeps its live value as the STATIC default."""
+        module_name = self._install_fixture_module(SITE_NAME="My App")
+        fields = {f.name: f for f in ModuleInspector(module_name).discover()}
+
+        assert fields["SITE_NAME"].value_kind == ValueKind.STATIC
+        assert fields["SITE_NAME"].default == "My App"

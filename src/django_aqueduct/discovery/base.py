@@ -64,12 +64,20 @@ class ValueKind(str, Enum):  # noqa: FURB189, UP042
             settings (e.g. ``openedx.core.lib.derived.Derived``).  The
             generator emits ``default=None`` and a comment advising the
             developer to reproduce the logic in a ``@model_validator``.
+        REDACTED: A value discovered by inspecting a *live* settings module
+            whose name looks secret-like (``SECRET``, ``PASSWORD``,
+            ``TOKEN``, etc.). Module inspection captures whatever value was
+            resolved from the environment at generation time, so writing it
+            verbatim into a generated (and likely committed) file risks
+            leaking real secrets. The generator emits ``default=None`` and a
+            comment instead of the observed value.
     """
 
     STATIC = "static"
     OPAQUE = "opaque"
     CALLABLE = "callable"
     DERIVED = "derived"
+    REDACTED = "redacted"
 
 
 @runtime_checkable

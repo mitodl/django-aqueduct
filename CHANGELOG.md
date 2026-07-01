@@ -19,6 +19,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the package used a Django 5-only API; the `>=5.0` pin was blocking
   adoption by projects (e.g. mit-learn) still on Django 4.2 LTS.
 
+### Fixed
+
+- `ModuleInspector` (the `--modules` codegen path) no longer writes the live,
+  environment-resolved value of secret-shaped settings (names containing
+  `SECRET`, `PASSWORD`, `TOKEN`, `PRIVATE_KEY`, `API_KEY`, `CREDENTIAL`, etc.)
+  into the generated file. Because this inspector reads settings by
+  importing the target module and reading resolved attribute values, running
+  it in an environment with real secrets set previously baked those values
+  verbatim into the (likely committed) generated scaffold. Matching fields
+  are now rendered as `default=None` with a `# REDACTED` comment instead —
+  the same treatment already given to `CALLABLE`/`DERIVED` values.
+- Generated files now `import datetime`. Any setting whose default is a
+  `datetime.timedelta` (or other `datetime` value) rendered as
+  `datetime.timedelta(...)` via `repr()`, but the import was missing,
+  causing a `NameError` the first time the generated `AqueductSettings` was
+  instantiated — `ast.parse()`-only tests hadn't caught this since it's a
+  runtime error, not a syntax error.
+
 ## [0.5.0]
 
 ### Fixed

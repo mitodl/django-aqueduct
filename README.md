@@ -49,6 +49,15 @@ This emits a typed `AqueductSettings(BaseSettings)` class with every
 `UPPERCASE` name from your settings module as a Pydantic field, grouped
 under section comments by source module.
 
+> **Security note:** `--modules` inspection imports your settings module and
+> reads each setting's *live, resolved* value — i.e. whatever your
+> environment supplies, not the static default in your source code. Fields
+> whose name looks secret-like (`SECRET`, `PASSWORD`, `TOKEN`, `API_KEY`,
+> etc.) are redacted automatically (rendered as `default=None`), but review
+> the generated file for any other sensitive values before committing it.
+> Prefer running the generator against a dev/CI environment with dummy
+> values, never against a real production or staging environment.
+
 ### Step 2 — Refine the scaffold
 
 Open `settings_model.py` and:
