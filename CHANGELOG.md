@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   defaulting to `"2"`) to support Vault mounts still running the KV v1
   secrets engine, in addition to the previously KV-v2-only implementation.
 
+### Changed
+
+- Lowered the minimum supported Django version from `5.0` to `4.2`. Nothing
+  in the package used a Django 5-only API; the `>=5.0` pin was blocking
+  adoption by projects (e.g. mit-learn) still on Django 4.2 LTS.
+
 ## [0.5.0]
 
 ### Fixed
