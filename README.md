@@ -297,7 +297,10 @@ Please open an issue before submitting a pull request for significant changes.
 
 Bump `version` in `pyproject.toml` and add a matching entry to `CHANGELOG.md`
 in the same PR. Once merged to `main`, the "Tag release" workflow pushes a
-`vX.Y.Z` tag automatically, which triggers "Publish to PyPI".
+`vX.Y.Z` tag and directly invokes "Publish to PyPI" as a reusable workflow —
+it does not rely on the tag push itself to trigger publishing, since a push
+made with the default `GITHUB_TOKEN` does not fire other workflows' `push`
+triggers.
 
 ---
 
