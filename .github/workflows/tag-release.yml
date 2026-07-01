@@ -1,0 +1,34 @@
+name: Tag release
+
+on:
+  push:
+    branches: ["main"]
+    paths: ["pyproject.toml"]
+
+jobs:
+  tag:
+    name: Tag on version bump
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Read version from pyproject.toml
+        id: version
+        run: |
+          version=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Tag and push if new
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists, skipping."
+            exit 0
+          fi
+          git tag "$tag"
+          git push origin "$tag"

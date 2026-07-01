@@ -293,6 +293,12 @@ prek install
 
 Please open an issue before submitting a pull request for significant changes.
 
+### Releasing
+
+Bump `version` in `pyproject.toml` and add a matching entry to `CHANGELOG.md`
+in the same PR. Once merged to `main`, the "Tag release" workflow pushes a
+`vX.Y.Z` tag automatically, which triggers "Publish to PyPI".
+
 ---
 
 ## License
