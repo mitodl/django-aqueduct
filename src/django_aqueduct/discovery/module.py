@@ -25,7 +25,10 @@ _SENSITIVE_NAME_MARKERS: tuple[str, ...] = (
     "CREDENTIAL",
     "SIGNING_KEY",
     "ENCRYPTION_KEY",
-    "_DSN",
+    "DSN",
+    "DATABASE_URL",
+    "REDIS_URL",
+    "BROKER_URL",
 )
 
 

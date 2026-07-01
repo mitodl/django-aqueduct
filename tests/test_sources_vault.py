@@ -207,6 +207,24 @@ class TestKVVersion:
             path="myapp/production", mount_point="secret-mitxonline"
         )
 
+    def test_kv_version_accepts_int(self):
+        """An integer kv_version (e.g. 1) is coerced to the matching string API."""
+        mock_client = _make_kv_v1_hvac_client()
+        source = _vault_source(auth_method="token", vault_token="t", kv_version=1)
+
+        with patch("hvac.Client", return_value=mock_client):
+            source()
+
+        mock_client.secrets.kv.v1.read_secret.assert_called_once_with(
+            path="myapp/production", mount_point="secret"
+        )
+        mock_client.secrets.kv.v2.read_secret_version.assert_not_called()
+
+    def test_invalid_kv_version_raises(self):
+        """An unsupported kv_version raises ValueError at construction time."""
+        with pytest.raises(ValueError, match="kv_version must be '1' or '2'"):
+            _vault_source(auth_method="token", vault_token="t", kv_version="3")
+
 
 class TestImportGuard:
     """VaultSettingsSource raises ImportError when hvac is missing."""

@@ -70,6 +70,7 @@ def _build_header(*, include_typeddict: bool) -> str:
     typing_line = f"from typing import {', '.join(sorted(typing_names))}"
 
     return (
+        f"# ruff: noqa\n"
         f"{_COMMENT_BLOCK}\n"
         f"from __future__ import annotations\n\n"
         f"import datetime\n"

@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `VaultSettingsSource` accepts a `kv_version` argument (`"1"` or `"2"`,
   defaulting to `"2"`) to support Vault mounts still running the KV v1
   secrets engine, in addition to the previously KV-v2-only implementation.
+  Non-string values (e.g. `kv_version=1`) are coerced; anything other than
+  `1`/`2` raises `ValueError` at construction time instead of silently
+  falling back to KV v2.
 
 ### Changed
 
@@ -23,19 +26,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `ModuleInspector` (the `--modules` codegen path) no longer writes the live,
   environment-resolved value of secret-shaped settings (names containing
-  `SECRET`, `PASSWORD`, `TOKEN`, `PRIVATE_KEY`, `API_KEY`, `CREDENTIAL`, etc.)
-  into the generated file. Because this inspector reads settings by
-  importing the target module and reading resolved attribute values, running
-  it in an environment with real secrets set previously baked those values
-  verbatim into the (likely committed) generated scaffold. Matching fields
-  are now rendered as `default=None` with a `# REDACTED` comment instead —
-  the same treatment already given to `CALLABLE`/`DERIVED` values.
+  `SECRET`, `PASSWORD`, `TOKEN`, `PRIVATE_KEY`, `API_KEY`, `CREDENTIAL`,
+  `DSN`, `DATABASE_URL`, `REDIS_URL`, `BROKER_URL`, etc.) into the generated
+  file. Because this inspector reads settings by importing the target module
+  and reading resolved attribute values, running it in an environment with
+  real secrets set previously baked those values verbatim into the (likely
+  committed) generated scaffold. Matching fields are now rendered as
+  `default=None` with a `# REDACTED` comment instead — the same treatment
+  already given to `CALLABLE`/`DERIVED` values.
 - Generated files now `import datetime`. Any setting whose default is a
   `datetime.timedelta` (or other `datetime` value) rendered as
   `datetime.timedelta(...)` via `repr()`, but the import was missing,
   causing a `NameError` the first time the generated `AqueductSettings` was
   instantiated — `ast.parse()`-only tests hadn't caught this since it's a
   runtime error, not a syntax error.
+- Generated files now start with `# ruff: noqa` so that unconditional
+  `datetime`/`pathlib` imports don't trip consumers' `F401` unused-import
+  lint checks when a given settings model happens not to use one of them.
 
 ## [0.5.0]
 

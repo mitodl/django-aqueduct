@@ -126,6 +126,10 @@ class TestRedactionCoversRealSecretValues:
             "JWT_SIGNING_KEY",
             "FIELD_ENCRYPTION_KEY",
             "SENTRY_DSN",
+            "DATABASE_URL",
+            "REDIS_URL",
+            "BROKER_URL",
+            "DSN",
         ],
     )
     def test_redacts_secret_shaped_names(self, name: str) -> None:

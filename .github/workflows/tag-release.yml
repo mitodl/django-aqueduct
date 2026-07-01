@@ -17,10 +17,14 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Read version from pyproject.toml
         id: version
         run: |
-          version=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/')
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Tag and push if new

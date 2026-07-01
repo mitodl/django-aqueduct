@@ -107,10 +107,12 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
     ) -> None:
         """Store configuration for Vault access and authentication."""
         super().__init__(settings_cls)
+        if str(kv_version) not in ("1", "2"):
+            raise ValueError(f"kv_version must be '1' or '2', got {kv_version!r}")
         self._vault_url = vault_url
         self._vault_path = vault_path
         self._mount_point = mount_point
-        self._kv_version = kv_version
+        self._kv_version = str(kv_version)
         self._auth_method = auth_method
         self._vault_token = vault_token
         self._role = role

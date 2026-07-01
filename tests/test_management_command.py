@@ -177,8 +177,8 @@ def test_python_format_is_default(capsys: _Capsys) -> None:
     """Without --format the command defaults to Python output."""
     call_command("generate_aqueduct_settings", modules="fixture_settings")
     captured = capsys.readouterr()
-    # Python output starts with the comment block, not JSON
-    assert captured.out.startswith("# This file was generated")
+    # Python output starts with the noqa directive and comment block, not JSON
+    assert captured.out.startswith("# ruff: noqa\n# This file was generated")
 
 
 def test_multiple_modules(capsys: _Capsys) -> None:
