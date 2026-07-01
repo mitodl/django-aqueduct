@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `VaultSettingsSource` accepts a `kv_version` argument (`"1"` or `"2"`,
+  defaulting to `"2"`) to support Vault mounts still running the KV v1
+  secrets engine, in addition to the previously KV-v2-only implementation.
+
 ## [0.5.0]
 
 ### Fixed
