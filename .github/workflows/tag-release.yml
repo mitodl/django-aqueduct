@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      created: ${{ steps.tag.outputs.created }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,11 +30,22 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Tag and push if new
+        id: tag
         run: |
           tag="v${{ steps.version.outputs.version }}"
           if git rev-parse "$tag" >/dev/null 2>&1; then
             echo "Tag $tag already exists, skipping."
+            echo "created=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git tag "$tag"
           git push origin "$tag"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish to PyPI
+    needs: tag
+    if: needs.tag.outputs.created == 'true'
+    permissions:
+      id-token: write # Required for OIDC trusted publishing
+    uses: ./.github/workflows/publish.yml
