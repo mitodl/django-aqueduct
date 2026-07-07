@@ -158,9 +158,12 @@ class Command(BaseCommand):
 
     def handle(self, *args: object, **options: object) -> None:
         """Execute the command."""
-        from django_aqueduct.config import load_config  # noqa: PLC0415
+        from django_aqueduct.config import ConfigError, load_config  # noqa: PLC0415
 
-        cfg = load_config()
+        try:
+            cfg = load_config()
+        except ConfigError as exc:
+            raise CommandError(str(exc)) from exc
 
         # CLI flags override [tool.aqueduct]; fall back to config, then default.
         modules_str = str(options.get("modules") or "")

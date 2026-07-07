@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from django_aqueduct.config import find_pyproject, load_config
+import pytest
+
+from django_aqueduct.config import ConfigError, find_pyproject, load_config
 
 
 def _write_pyproject(tmp_path: Path, body: str) -> Path:
@@ -48,6 +50,18 @@ def test_missing_pyproject_returns_defaults(tmp_path: Path) -> None:
     # tmp_path has no pyproject.toml
     cfg = load_config(tmp_path / "nonexistent")
     assert cfg.modules == []
+
+
+def test_invalid_format_raises(tmp_path: Path) -> None:
+    root = _write_pyproject(tmp_path, "[tool.aqueduct]\nformat = 'yaml'\n")
+    with pytest.raises(ConfigError, match="format='yaml' is invalid"):
+        load_config(root)
+
+
+def test_malformed_toml_raises_config_error(tmp_path: Path) -> None:
+    root = _write_pyproject(tmp_path, "[tool.aqueduct]\nmodules = [oops\n")
+    with pytest.raises(ConfigError, match="Could not read"):
+        load_config(root)
 
 
 def test_find_pyproject_walks_up(tmp_path: Path) -> None:

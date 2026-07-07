@@ -18,6 +18,12 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+_VALID_FORMATS = ("python", "jsonschema")
+
+
+class ConfigError(Exception):
+    """Raised when ``[tool.aqueduct]`` cannot be read or holds an invalid value."""
+
 
 @dataclass
 class AqueductConfig:
@@ -49,8 +55,11 @@ def load_config(start: Path | None = None) -> AqueductConfig:
     path = find_pyproject(start)
     if path is None:
         return AqueductConfig()
-    with path.open("rb") as fh:
-        data = tomllib.load(fh)
+    try:
+        with path.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ConfigError(f"Could not read {path}: {exc}") from exc
     table = data.get("tool", {}).get("aqueduct", {})
     if not isinstance(table, dict):
         return AqueductConfig()
@@ -67,6 +76,12 @@ def load_config(start: Path | None = None) -> AqueductConfig:
         cfg.attribute_packages = table["attribute_packages"]
     if isinstance(table.get("class_name"), str):
         cfg.class_name = table["class_name"]
-    if isinstance(table.get("format"), str):
-        cfg.output_format = table["format"]
+    if "format" in table:
+        fmt = table["format"]
+        if fmt not in _VALID_FORMATS:
+            raise ConfigError(
+                f"[tool.aqueduct] format={fmt!r} is invalid; "
+                f"expected one of {', '.join(_VALID_FORMATS)}."
+            )
+        cfg.output_format = fmt
     return cfg
