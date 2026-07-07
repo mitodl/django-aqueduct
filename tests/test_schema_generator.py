@@ -98,6 +98,18 @@ def test_package_extension_present_only_when_attributed() -> None:
     assert "x-aqueduct-package" not in props["MY_CUSTOM"]
 
 
+def test_set_default_emitted_as_sorted_list() -> None:
+    # sets aren't JSON-serialisable; they map to array and must be emitted as a
+    # (sorted, deterministic) list rather than dropped.
+    f = _field(
+        "EXCLUDED",
+        type_base="set[Any]",
+        default=Default.literal_({"b", "a"}, factory=True),
+    )
+    prop = SchemaGenerator([f]).generate()["properties"]["EXCLUDED"]
+    assert prop["default"] == ["a", "b"]
+
+
 def test_needs_refinement_flagged() -> None:
     f = _field("MYSTERY", type_base="Any", needs_refinement=True)
     prop = SchemaGenerator([f]).generate()["properties"]["MYSTERY"]

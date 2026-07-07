@@ -59,6 +59,18 @@ _ANNOTATION_TO_JSON_TYPE: dict[str, dict[str, Any]] = {
 }
 
 
+def _sorted_or_list(value: set[Any] | frozenset[Any]) -> list[Any]:
+    """Return a set as a sorted list, falling back to insertion order if unsortable.
+
+    Sorting gives deterministic schema output; mixed-type sets (which cannot be
+    ordered) fall back to a plain list so we still emit *something* stable-ish.
+    """
+    try:
+        return sorted(value)
+    except TypeError:
+        return list(value)
+
+
 def _annotation_to_json_schema(annotation: str) -> dict[str, Any]:
     """Convert a type annotation base string to a JSON Schema type fragment.
 
@@ -122,11 +134,15 @@ class SchemaGenerator:
                 prop["description"] = f.description
 
             # Include a literal default so validators know the expected value
-            # when the key is absent.
+            # when the key is absent. Sets/frozensets are not JSON-serialisable
+            # but map to an ``array`` type, so emit them as a sorted list.
             if f.default.strategy in (DefaultStrategy.LITERAL, DefaultStrategy.FACTORY):
+                value = f.default.literal
+                if isinstance(value, set | frozenset):
+                    value = _sorted_or_list(value)
                 try:
-                    json.dumps(f.default.literal)
-                    prop["default"] = f.default.literal
+                    json.dumps(value)
+                    prop["default"] = value
                 except (TypeError, ValueError):
                     pass
 

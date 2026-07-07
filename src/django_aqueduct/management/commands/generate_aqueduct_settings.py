@@ -128,8 +128,9 @@ class Command(BaseCommand):
         if include_envparser is None:
             include_envparser = _envparser_available() and _mitol_in_installed_apps()
 
-        # Discover into a name-keyed dict so a later module (or the envparser)
-        # overrides an earlier definition — one attribute per name, no dupes.
+        # Discover into a name-keyed dict so a later module overrides an
+        # earlier one (one attribute per name, no dupes); the envparser below
+        # only fills in names not already found in a module.
         by_name: dict[str, SettingField] = {}
         for module_path in module_paths:
             try:
