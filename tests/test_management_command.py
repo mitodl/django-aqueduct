@@ -207,3 +207,111 @@ def test_multiple_modules(capsys: _Capsys) -> None:
     assert "SITE_NAME" in captured.out
     assert "fixture_settings" in captured.out
     assert "testapp.settings" in captured.out
+
+
+# ------------------------------------------------------------------ #
+# Lifecycle: managed-region merge, --check, --reset, --class-name     #
+# ------------------------------------------------------------------ #
+
+
+def test_class_name_option(capsys: _Capsys) -> None:
+    """--class-name renames the generated BaseSettings subclass."""
+    call_command(
+        "generate_aqueduct_settings",
+        modules="v2_fixture_settings",
+        class_name="MyAppSettings",
+    )
+    assert "class MyAppSettings(BaseSettings):" in capsys.readouterr().out
+
+
+def test_regeneration_preserves_hand_written_region(
+    tmp_path: pathlib.Path, capsys: _Capsys
+) -> None:
+    """Re-running the command keeps code written in the preserved region."""
+    out = tmp_path / "settings_model.py"
+    call_command(
+        "generate_aqueduct_settings", modules="v2_fixture_settings", output=str(out)
+    )
+
+    # Insert a hand-written validator into the preserved region.
+    text = out.read_text()
+    marker = "    # >>> aqueduct:preserved:validators\n"
+    text = text.replace(marker, marker + "    HAND_WRITTEN = 42\n")
+    out.write_text(text)
+
+    # Regenerate — the hand-written line must survive the merge.
+    call_command(
+        "generate_aqueduct_settings", modules="v2_fixture_settings", output=str(out)
+    )
+    assert "HAND_WRITTEN = 42" in out.read_text()
+
+
+def test_reset_discards_preserved_region(
+    tmp_path: pathlib.Path, capsys: _Capsys
+) -> None:
+    """--reset overwrites the whole file, dropping hand-written preserved code."""
+    out = tmp_path / "settings_model.py"
+    call_command(
+        "generate_aqueduct_settings", modules="v2_fixture_settings", output=str(out)
+    )
+    text = out.read_text().replace(
+        "    # >>> aqueduct:preserved:validators\n",
+        "    # >>> aqueduct:preserved:validators\n    HAND_WRITTEN = 42\n",
+    )
+    out.write_text(text)
+
+    call_command(
+        "generate_aqueduct_settings",
+        modules="v2_fixture_settings",
+        output=str(out),
+        reset=True,
+    )
+    assert "HAND_WRITTEN = 42" not in out.read_text()
+
+
+def test_check_passes_when_in_sync(tmp_path: pathlib.Path, capsys: _Capsys) -> None:
+    """--check succeeds when the on-disk file matches a fresh render."""
+    out = tmp_path / "settings_model.py"
+    call_command(
+        "generate_aqueduct_settings", modules="v2_fixture_settings", output=str(out)
+    )
+    call_command(
+        "generate_aqueduct_settings",
+        modules="v2_fixture_settings",
+        output=str(out),
+        check=True,
+    )
+    assert "up to date" in capsys.readouterr().out
+
+
+def test_check_fails_on_drift(tmp_path: pathlib.Path) -> None:
+    """--check exits non-zero when a generated region has drifted."""
+    from django.core.management.base import CommandError
+
+    out = tmp_path / "settings_model.py"
+    call_command(
+        "generate_aqueduct_settings", modules="v2_fixture_settings", output=str(out)
+    )
+    # Corrupt a generated field body.
+    text = out.read_text().replace(
+        "MAX_CONNECTIONS: int = Field(default=100)",
+        "MAX_CONNECTIONS: int = Field(default=999)",
+    )
+    out.write_text(text)
+    with pytest.raises(CommandError, match="out of date"):
+        call_command(
+            "generate_aqueduct_settings",
+            modules="v2_fixture_settings",
+            output=str(out),
+            check=True,
+        )
+
+
+def test_check_stdout_is_rejected() -> None:
+    """--check needs a real file, not stdout."""
+    from django.core.management.base import CommandError
+
+    with pytest.raises(CommandError, match="requires --output"):
+        call_command(
+            "generate_aqueduct_settings", modules="v2_fixture_settings", check=True
+        )
