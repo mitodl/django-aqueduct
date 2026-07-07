@@ -118,9 +118,11 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
             raise ValueError(f"kv_version must be '1' or '2', got {kv_version!r}")
         self._vault_url = vault_url
         # One or more KV paths, read and merged in order (later paths win).
-        self._vault_paths: tuple[str, ...] = (
-            (vault_path,) if isinstance(vault_path, str) else tuple(vault_path)
-        )
+        paths = (vault_path,) if isinstance(vault_path, str) else tuple(vault_path)
+        paths = tuple(p for p in paths if p and p.strip())
+        if not paths:
+            raise ValueError("vault_path must contain at least one non-empty path.")
+        self._vault_paths: tuple[str, ...] = paths
         self._mount_point = mount_point
         self._secrets_cache: dict[str, Any] | None = None
         self._kv_version = str(kv_version)
@@ -169,7 +171,7 @@ class VaultSettingsSource(PydanticBaseSettingsSource):
         """Return the Vault secrets as a validated settings dict.
 
         Complex fields (dict/list/model) whose Vault value is a JSON string are
-        decoded via ``prepare_field_value``.
+        decoded via ``decode_complex_value``.
 
         Raises:
             VaultError: On connection/auth/read failure.

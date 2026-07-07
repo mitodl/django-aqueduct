@@ -316,3 +316,27 @@ def test_read_failure_wrapped_in_vault_error() -> None:
     with patch("hvac.Client", return_value=client):
         with pytest.raises(VaultError, match="Failed to read secrets"):
             src()
+
+
+def test_empty_vault_path_sequence_rejected() -> None:
+    with pytest.raises(ValueError, match="at least one non-empty path"):
+        VaultSettingsSource(
+            _Settings, vault_url="https://v", vault_path=[], vault_token="t"
+        )
+
+
+def test_blank_vault_path_rejected() -> None:
+    with pytest.raises(ValueError, match="at least one non-empty path"):
+        VaultSettingsSource(
+            _Settings, vault_url="https://v", vault_path=["", "  "], vault_token="t"
+        )
+
+
+def test_malformed_json_in_complex_field_wrapped() -> None:
+    from django_aqueduct.sources._base import SourceError
+
+    client = _make_hvac_client({"JWT_AUTH": "{not json"})
+    src = _real_source()
+    with patch("hvac.Client", return_value=client):
+        with pytest.raises(SourceError, match="Failed to decode complex value"):
+            src()

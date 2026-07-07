@@ -5,7 +5,7 @@ Requires the ``[yaml]`` extra::
     pip install django-aqueduct[yaml]
 
 Reads a YAML mapping from a file and feeds it to a settings model, decoding
-complex (dict/list) fields via ``prepare_field_value`` like the other sources.
+JSON-string complex fields via ``decode_complex_value`` like the other sources.
 
 Example::
 
@@ -75,10 +75,12 @@ class YamlSettingsSource(PydanticBaseSettingsSource):
         return self._data_cache
 
     def _load(self) -> dict[str, Any]:
-        if not self._path.is_file():
+        if not self._path.exists():
             if self._optional:
                 return {}
             raise YamlError(f"YAML settings file not found: {self._path}")
+        if not self._path.is_file():
+            raise YamlError(f"YAML settings path is not a file: {self._path}")
         yaml = _require_yaml()
         try:
             loaded = yaml.safe_load(self._path.read_text(encoding="utf-8"))
@@ -90,6 +92,12 @@ class YamlSettingsSource(PydanticBaseSettingsSource):
             raise YamlError(
                 f"{self._path} must contain a mapping at the top level, "
                 f"got {type(loaded).__name__}."
+            )
+        non_str = [k for k in loaded if not isinstance(k, str)]
+        if non_str:
+            raise YamlError(
+                f"{self._path} has non-string top-level keys {non_str!r}; "
+                f"settings names must be strings."
             )
         return loaded
 

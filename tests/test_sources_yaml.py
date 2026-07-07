@@ -61,6 +61,18 @@ def test_malformed_yaml_raises(tmp_path: Path) -> None:
         YamlSettingsSource(_Settings, path)()
 
 
+def test_directory_path_raises_even_if_optional(tmp_path: Path) -> None:
+    (tmp_path / "adir").mkdir()
+    with pytest.raises(YamlError, match="not a file"):
+        YamlSettingsSource(_Settings, tmp_path / "adir", optional=True)()
+
+
+def test_non_string_keys_rejected(tmp_path: Path) -> None:
+    path = _write(tmp_path, "1: x\nNAME: ok\n")
+    with pytest.raises(YamlError, match="non-string"):
+        YamlSettingsSource(_Settings, path)()
+
+
 def test_data_cached(tmp_path: Path) -> None:
     path = _write(tmp_path, "NAME: v1\n")
     src = YamlSettingsSource(_Settings, path)

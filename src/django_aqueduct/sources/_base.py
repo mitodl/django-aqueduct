@@ -8,9 +8,8 @@ first implementations got wrong:
   again in ``__call__``.
 * **Complex values** — a value stored as a JSON string (``'{"a": 1}'`` in
   Vault) must be JSON-decoded when the target field is complex, or validation
-  fails. :func:`build_from_mapping` routes every value through
-  ``prepare_field_value`` with the field's complexity, exactly like
-  pydantic-settings' own ``EnvSettingsSource``.
+  fails. :func:`build_from_mapping` runs string values for complex fields
+  through ``decode_complex_value``, like pydantic-settings' own sources.
 """
 
 from __future__ import annotations
@@ -33,11 +32,11 @@ def build_from_mapping(
 ) -> dict[str, Any]:
     """Build a settings dict from a fetched *secrets* mapping.
 
-    Declared fields are routed through ``prepare_field_value`` so complex
-    (dict/list/model) fields whose stored value is a JSON string are decoded
-    rather than rejected. Keys that match no declared field are passed through
-    unchanged, preserving ``extra="allow"`` behaviour for secrets stores that
-    hold more than the model declares.
+    A string value for a complex (dict/list/model) field is JSON-decoded via
+    ``decode_complex_value`` so JSON-in-Vault survives validation. Values that
+    are already parsed (e.g. from YAML) and keys that match no declared field
+    are passed through unchanged, preserving ``extra="allow"`` behaviour for
+    secrets stores that hold more than the model declares.
 
     Args:
         source: The calling settings source (for ``settings_cls`` and the
@@ -61,7 +60,12 @@ def build_from_mapping(
             and isinstance(value, str)
             and source.field_is_complex(field)
         ):
-            data[key] = source.decode_complex_value(key, field, value)
+            try:
+                data[key] = source.decode_complex_value(key, field, value)
+            except (ValueError, TypeError) as exc:
+                raise SourceError(
+                    f"Failed to decode complex value for field {key!r}: {exc}"
+                ) from exc
         else:
             data[key] = value
     return data
