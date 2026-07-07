@@ -93,6 +93,36 @@ def test_env_alias_and_required(fields):
     assert extra.env_aliases == ("EXTRA_HOST",)
 
 
+def test_explicit_required_wins_over_default(fields):
+    # get_string("X", default="fallback", required=True) → required despite the
+    # default (the explicit required= flag wins).
+    f = _by_name(fields)["REQUIRED_WITH_DEFAULT"]
+    assert f.required is True
+    assert f.default.strategy is DefaultStrategy.REQUIRED
+    assert f.env_aliases == ("REQUIRED_WITH_DEFAULT",)
+
+
+def test_leading_comment_uses_statement_line(tmp_path):
+    # A parenthesized value starts on a later line than the assignment, so
+    # anchoring on the statement line (not value.lineno) is required to find
+    # the leading comment. Written to a temp file so the formatter can't
+    # collapse the parentheses.
+    src = 'import os  # noqa\n\n# the description\nWRAPPED = (\n    "v"\n)\n'
+    path = tmp_path / "wrapped_settings.py"
+    path.write_text(src, encoding="utf-8")
+    fields = StaticModuleInspector("wrapped_settings", source_file=path).discover()
+    wrapped = _by_name(fields)["WRAPPED"]
+    assert wrapped.description == "the description"
+    assert wrapped.default.literal == "v"
+
+
+def test_description_survives_pragma_line(fields):
+    # A standalone noqa pragma between the description and the assignment is
+    # skipped, not treated as the end of the description block.
+    f = _by_name(fields)["PRAGMA_ABOVE"]
+    assert f.description == "Real description above a standalone pragma line."
+
+
 def test_conditional_is_derived(fields):
     f = _by_name(fields)["CACHE_BACKEND"]
     assert f.default.strategy is DefaultStrategy.DERIVED
@@ -188,6 +218,10 @@ def test_generated_model_instantiates(fields, tmp_path):
     sys.modules["generated_settings"] = module
     spec.loader.exec_module(module)  # raises on NameError/SyntaxError
 
-    inst = module.AqueductSettings(SECRET_KEY="x", APP_BASE_URL="https://example.test")
+    inst = module.AqueductSettings(
+        SECRET_KEY="x",
+        APP_BASE_URL="https://example.test",
+        REQUIRED_WITH_DEFAULT="v",
+    )
     assert inst.APP_BASE_URL == "https://example.test"
     assert inst.SESSION_AGE.days == 14

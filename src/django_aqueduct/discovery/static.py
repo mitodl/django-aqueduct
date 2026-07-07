@@ -144,12 +144,16 @@ def _reader_default_node(call: ast.Call) -> ast.expr | None:
     return None
 
 
-def _reader_required_false(call: ast.Call) -> bool:
-    """Return True when the reader explicitly passes ``required=False``."""
+def _reader_required_kwarg(call: ast.Call) -> bool | None:
+    """Return the explicit ``required=`` value of a reader call, or ``None``.
+
+    An explicit ``required=`` wins over the presence of a default, so
+    ``get_string("X", default="d", required=True)`` is correctly required.
+    """
     for kw in call.keywords:
         if kw.arg == "required" and isinstance(kw.value, ast.Constant):
-            return kw.value.value is False
-    return False
+            return bool(kw.value.value)
+    return None
 
 
 class _ImportTable:
@@ -223,8 +227,11 @@ def _leading_comment(source_lines: list[str], lineno: int) -> str:
         if not stripped.startswith("#"):
             break
         text = stripped.lstrip("#").strip()
+        # Skip (do not stop at) tooling pragmas so a real description on the
+        # line above a noqa/type/ruff pragma is still collected.
         if text.startswith(("type:", "noqa", "ruff:", "pragma:")):
-            break
+            idx -= 1
+            continue
         # Skip decorative separators (e.g. `# ---- section ----`): a comment
         # with no alphanumeric content is a divider, not a description.
         if not any(ch.isalnum() for ch in text):
@@ -398,6 +405,7 @@ class StaticModuleInspector:
         value = stmt.value
         if value is None:
             return
+        stmt_lineno = stmt.lineno
         for target, value_expr in _assignment_pairs(targets, value):
             if not target.id.isupper():
                 continue
@@ -407,27 +415,35 @@ class StaticModuleInspector:
             if name in fields and conditional:
                 continue
             fields[name] = self._build_field(
-                name, value_expr, imports, source, source_lines, conditional=conditional
+                name,
+                value_expr,
+                stmt_lineno,
+                imports,
+                source,
+                source_lines,
+                conditional=conditional,
             )
 
     def _build_field(
         self,
         name: str,
         value: ast.expr,
+        stmt_lineno: int,
         imports: _ImportTable,
         source: str,
         source_lines: list[str],
         *,
         conditional: bool,
     ) -> SettingField:
-        lineno = getattr(value, "lineno", None)
-        description = (
-            _leading_comment(source_lines, lineno) if lineno is not None else ""
-        )
+        # Anchor comment extraction and provenance on the *statement* line, not
+        # the value expression: for a parenthesized / multi-line assignment the
+        # value starts on a later line, so value.lineno would miss the leading
+        # comment block entirely.
+        description = _leading_comment(source_lines, stmt_lineno)
         prov = Provenance(
             source_module=self._module_path,
             method=DiscoveryMethod.STATIC,
-            lineno=lineno,
+            lineno=stmt_lineno,
             conditional=conditional,
         )
         reader = self._reader_info(value)
@@ -553,7 +569,12 @@ class StaticModuleInspector:
             ):
                 return None
             default_node = _reader_default_node(value)
-            required = default_node is None and not _reader_required_false(value)
+            explicit_required = _reader_required_kwarg(value)
+            required = (
+                explicit_required
+                if explicit_required is not None
+                else default_node is None
+            )
             return _ReaderInfo(
                 _reader_alias(value),
                 TypeRef(_READER_TYPES[method]),

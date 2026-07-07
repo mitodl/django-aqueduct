@@ -36,6 +36,16 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 # os.getenv with no default → optional, None (v1 wrongly marked this required).
 EXTRA_HOST = os.getenv("EXTRA_HOST")
 
+# Typed reader with BOTH a default and an explicit required=True: the explicit
+# flag must win (env is only referenced statically; this file is never imported).
+REQUIRED_WITH_DEFAULT = env.get_string(  # noqa: F821
+    "REQUIRED_WITH_DEFAULT", default="fallback", required=True
+)
+
+# Real description above a standalone pragma line.
+# noqa: E501
+PRAGMA_ABOVE = 1
+
 # ---- aliased import: the `as` alias must survive into the generated import ----
 ALT_PRICE = Dec("1.50")
 
