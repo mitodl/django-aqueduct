@@ -14,7 +14,7 @@ leaves room for **preserved** regions the writer keeps byte-for-byte. See
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from django_aqueduct.discovery.ir import (
     DefaultStrategy,
@@ -235,7 +235,7 @@ class ModelRenderer:
                 out.append(_render_field(f, enriched.get(f.name)))
         return out
 
-    def _enrich_dicts(self) -> tuple[dict[str, str], list[Any]]:
+    def _enrich_dicts(self) -> tuple[dict[str, str], list[TypedDictDef]]:
         """Return ``(enriched_annotations, typeddict_defs)`` for dict-valued fields.
 
         Uses genson (via ``dict_schema.enrich_dict_annotation``) to turn a
@@ -251,7 +251,7 @@ class ModelRenderer:
             return {}, []
 
         enriched: dict[str, str] = {}
-        defs: list[Any] = []
+        defs: list[TypedDictDef] = []
         seen: set[str] = set()
         literal_kinds = (DefaultStrategy.LITERAL, DefaultStrategy.FACTORY)
         for f in self._fields:
