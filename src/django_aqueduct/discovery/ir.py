@@ -32,10 +32,13 @@ from enum import Enum
 class ImportSpec:
     """A single import the renderer must emit for a type or expression to resolve.
 
-    Two shapes are supported:
+    Shapes supported:
 
     * ``ImportSpec("datetime")`` → ``import datetime``
+    * ``ImportSpec("datetime", asname="dt")`` → ``import datetime as dt``
     * ``ImportSpec("datetime", "timedelta")`` → ``from datetime import timedelta``
+    * ``ImportSpec("datetime", "timedelta", asname="td")``
+      → ``from datetime import timedelta as td``
 
     Frozen and hashable so a whole model's imports can be de-duplicated with a
     ``set``.
@@ -44,20 +47,34 @@ class ImportSpec:
         module: The dotted module to import from, e.g. ``"datetime"``.
         name: The name to import from ``module``. ``None`` emits a plain
             ``import module``.
+        asname: The bound alias (``import x as asname`` /
+            ``from m import n as asname``). ``None`` emits no alias. Preserving
+            the alias is required so a captured default expression that
+            references the aliased name still resolves.
     """
 
     module: str
     name: str | None = None
+    asname: str | None = None
 
     def render(self) -> str:
         """Return the import statement as a single line of source."""
         if self.name is None:
-            return f"import {self.module}"
-        return f"from {self.module} import {self.name}"
+            stmt = f"import {self.module}"
+        else:
+            stmt = f"from {self.module} import {self.name}"
+        if self.asname is not None:
+            stmt = f"{stmt} as {self.asname}"
+        return stmt
 
-    def sort_key(self) -> tuple[int, str, str]:
+    def sort_key(self) -> tuple[int, str, str, str]:
         """Return a key that orders plain imports before ``from`` imports."""
-        return (0 if self.name is None else 1, self.module, self.name or "")
+        return (
+            0 if self.name is None else 1,
+            self.module,
+            self.name or "",
+            self.asname or "",
+        )
 
 
 @dataclass(frozen=True)

@@ -65,9 +65,11 @@ def test_decimal_and_path_expr(fields):
 
 def test_env_alias_and_required(fields):
     by = _by_name(fields)
+    # secret-like name read via os.environ[...] → required AND enforced
+    # (rendered Field(...), not a leaked/optional value).
     secret = by["SECRET_KEY"]
-    # secret-like name → redacted, but alias + required still recovered
-    assert secret.default.strategy is DefaultStrategy.REDACTED
+    assert secret.default.strategy is DefaultStrategy.REQUIRED
+    assert secret.required is True
     assert secret.env_aliases == ("SECRET_KEY",)
 
     base_url = by["APP_BASE_URL"]
@@ -75,16 +77,76 @@ def test_env_alias_and_required(fields):
     assert base_url.required is True
     assert base_url.env_aliases == ("APP_BASE_URL",)
 
+    # os.getenv with a default → optional literal default, not required.
     log = by["LOG_LEVEL"]
-    # has a default → not required
     assert log.required is False
+    assert log.default.strategy is DefaultStrategy.LITERAL
+    assert log.default.literal == "INFO"
     assert log.env_aliases == ("LOG_LEVEL",)
+
+    # os.getenv with NO default → optional None, never required (the v1 bug).
+    extra = by["EXTRA_HOST"]
+    assert extra.required is False
+    assert extra.default.strategy is DefaultStrategy.LITERAL
+    assert extra.default.literal is None
+    assert extra.type.optional is True
+    assert extra.env_aliases == ("EXTRA_HOST",)
 
 
 def test_conditional_is_derived(fields):
     f = _by_name(fields)["CACHE_BACKEND"]
     assert f.default.strategy is DefaultStrategy.DERIVED
     assert f.provenance.conditional is True
+
+
+def test_nested_function_local_not_discovered(fields):
+    # A local inside a def nested in an `if` is not a setting.
+    assert "NESTED_LOCAL" not in _by_name(fields)
+
+
+def test_tuple_unpacking_discovered(fields):
+    by = _by_name(fields)
+    assert by["LANG_CODE"].default.literal == "en"
+    assert by["TZ_NAME"].default.literal == "UTC"
+
+
+def test_aliased_import_preserved_in_expr(fields):
+    f = _by_name(fields)["ALT_PRICE"]
+    assert f.default.strategy is DefaultStrategy.EXPR
+    assert f.default.expr == 'Dec("1.50")'
+    # the `as` alias must be carried on the emitted import
+    assert any(i.asname == "Dec" for i in f.default.expr_imports), (
+        f.default.expr_imports
+    )
+
+
+def test_builtin_cast_is_not_a_reader(fields):
+    f = _by_name(fields)["POOL_SIZE"]
+    assert f.env_aliases == ()
+    assert f.required is False
+    assert f.default.strategy is DefaultStrategy.EXPR
+
+
+def test_module_local_reference_falls_back_to_derived(fields):
+    # `DERIVED_URL = APP_BASE_URL + "/api"` references a module-local name that
+    # cannot be reproduced in the generated file → DERIVED, not a NameError EXPR.
+    f = _by_name(fields)["DERIVED_URL"]
+    assert f.default.strategy is DefaultStrategy.DERIVED
+    assert f.type.optional is True
+
+
+def test_aliased_import_renders_and_instantiates(fields, tmp_path):
+    import importlib.util
+    import sys
+
+    src = ModelRenderer(fields).render()
+    assert "from decimal import Decimal as Dec" in src
+    path = tmp_path / "gen_alias.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("gen_alias", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["gen_alias"] = module
+    spec.loader.exec_module(module)  # NameError here if the alias was lost
 
 
 def test_render_parses(fields):

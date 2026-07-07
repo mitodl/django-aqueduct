@@ -10,6 +10,7 @@ import datetime
 import os
 import pathlib
 from decimal import Decimal
+from decimal import Decimal as Dec
 
 # ---- literals ----
 SITE_NAME = "My Django App"
@@ -27,12 +28,32 @@ DATA_DIR = pathlib.Path("/var/data")
 DEFAULT_PRICE = Decimal("9.99")
 
 # ---- env readers: alias + type + required-ness ----
+# os.environ[...] raises on a missing key → required.
 SECRET_KEY = os.environ["SECRET_KEY"]
-APP_BASE_URL = os.getenv("APP_BASE_URL")
+APP_BASE_URL = os.environ["APP_BASE_URL"]
+# os.getenv with a default → optional with that default.
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+# os.getenv with no default → optional, None (v1 wrongly marked this required).
+EXTRA_HOST = os.getenv("EXTRA_HOST")
+
+# ---- aliased import: the `as` alias must survive into the generated import ----
+ALT_PRICE = Dec("1.50")
+
+# ---- builtin cast is NOT an env reader (no bogus alias / required flag) ----
+POOL_SIZE = int("10")
+
+# ---- tuple unpacking must not be silently dropped ----
+LANG_CODE, TZ_NAME = "en", "UTC"
+
+# ---- EXPR referencing a module-local name → DERIVED (cannot be reproduced) ----
+DERIVED_URL = APP_BASE_URL + "/api"
 
 # ---- conditional branch: must be DERIVED, not a frozen snapshot ----
 if DEBUG:
     CACHE_BACKEND = "locmem"
+
+    def _make_helper():
+        NESTED_LOCAL = 1  # a function local, NOT a setting
+        return NESTED_LOCAL
 else:
     CACHE_BACKEND = "redis"

@@ -26,10 +26,14 @@ the primary defence.
 from __future__ import annotations
 
 import ast
+import builtins
+from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import NamedTuple
 
 from django_aqueduct.discovery.ir import (
     Default,
+    DefaultStrategy,
     DiscoveryMethod,
     ImportSpec,
     Provenance,
@@ -38,20 +42,40 @@ from django_aqueduct.discovery.ir import (
 )
 from django_aqueduct.discovery.module import _looks_secret
 
-# Reader-call method name → (annotation base, imports). Used both for
-# ``obj.method("VAR")`` attribute calls and bare ``method("VAR")`` calls.
-_READER_TYPES: dict[str, tuple[str, frozenset[ImportSpec]]] = {
-    "get_string": ("str", frozenset()),
-    "get_bool": ("bool", frozenset()),
-    "get_int": ("int", frozenset()),
-    "get_float": ("float", frozenset()),
-    "get_list_literal": ("list[Any]", frozenset()),
-    "get_delimited_list": ("list[str]", frozenset()),
-    "str": ("str", frozenset()),
-    "bool": ("bool", frozenset()),
-    "int": ("int", frozenset()),
-    "float": ("float", frozenset()),
+# Names that are always available in generated code without an import.
+_BUILTIN_NAMES: frozenset[str] = frozenset(dir(builtins))
+
+# Statement nodes that open a new scope; the conditional-assignment walk must
+# not descend into them (a local inside a nested def/class is not a setting).
+_SCOPE_NODES: tuple[type[ast.AST], ...] = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.ClassDef,
+    ast.Lambda,
+)
+
+# Env-reader method name → annotation base. Deliberately excludes the builtin
+# converters (``str``/``int``/``bool``/``float``): matching is on the trailing
+# call name, so treating those as readers would misfire on any ``int(x)`` cast
+# and fabricate a bogus alias/required flag.
+_READER_TYPES: dict[str, str] = {
+    "get_string": "str",
+    "get_bool": "bool",
+    "get_int": "int",
+    "get_float": "float",
+    "get_list_literal": "list[Any]",
+    "get_delimited_list": "list[str]",
+    # django-environ style: env.str(...), env.bool(...), env.int(...)
+    "str": "str",
+    "bool": "bool",
+    "int": "int",
+    "float": "float",
 }
+
+# Only the django-environ ``env.<type>(...)`` readers use the builtin-shadowing
+# names; a bare ``int(...)`` / ``str(...)`` at module scope is a cast, not a
+# reader, so those names are recognised *only* as attribute calls.
+_ATTRIBUTE_ONLY_READERS: frozenset[str] = frozenset({"str", "bool", "int", "float"})
 
 # Callable expressions whose result type we can name precisely, keyed by the
 # rendered call target. Lets ``FOO = timedelta(days=1)`` get a real annotation
@@ -83,6 +107,51 @@ def _dotted(node: ast.expr) -> str | None:
     return None
 
 
+class _ReaderInfo(NamedTuple):
+    """Metadata extracted from an env-reader expression."""
+
+    aliases: tuple[str, ...]
+    type_ref: TypeRef
+    required: bool
+    default_node: ast.expr | None = None
+
+
+# Keyword names under which an env reader may receive its variable name.
+_ALIAS_KWARGS: frozenset[str] = frozenset({"name", "var", "key"})
+
+
+def _reader_alias(call: ast.Call) -> tuple[str, ...]:
+    """Return the env-var name from a reader call's first positional or name kwarg."""
+    if call.args and isinstance(call.args[0], ast.Constant):
+        first = call.args[0].value
+        if isinstance(first, str):
+            return (first,)
+    for kw in call.keywords:
+        if kw.arg in _ALIAS_KWARGS and isinstance(kw.value, ast.Constant):
+            val = kw.value.value
+            if isinstance(val, str):
+                return (val,)
+    return ()
+
+
+def _reader_default_node(call: ast.Call) -> ast.expr | None:
+    """Return the reader's default value node (2nd positional or ``default=`` kwarg)."""
+    if len(call.args) >= 2:
+        return call.args[1]
+    for kw in call.keywords:
+        if kw.arg == "default":
+            return kw.value
+    return None
+
+
+def _reader_required_false(call: ast.Call) -> bool:
+    """Return True when the reader explicitly passes ``required=False``."""
+    for kw in call.keywords:
+        if kw.arg == "required" and isinstance(kw.value, ast.Constant):
+            return kw.value.value is False
+    return False
+
+
 class _ImportTable:
     """Maps bound names in a module to the :class:`ImportSpec` that provides them."""
 
@@ -92,16 +161,19 @@ class _ImportTable:
     def add_import(self, node: ast.Import) -> None:
         for alias in node.names:
             # `import a.b` binds `a` but the statement imports `a.b`; an
-            # `as` alias binds that name instead.
+            # `as` alias binds that name instead and must be preserved so a
+            # captured expression referencing the alias still resolves.
             bound = alias.asname or alias.name.split(".")[0]
-            self._by_name[bound] = ImportSpec(alias.name, None)
+            self._by_name[bound] = ImportSpec(alias.name, None, asname=alias.asname)
 
     def add_importfrom(self, node: ast.ImportFrom) -> None:
         if node.module is None or node.level:  # skip relative imports
             return
         for alias in node.names:
             bound = alias.asname or alias.name
-            self._by_name[bound] = ImportSpec(node.module, alias.name)
+            self._by_name[bound] = ImportSpec(
+                node.module, alias.name, asname=alias.asname
+            )
 
     def resolve(self, name: str) -> ImportSpec | None:
         return self._by_name.get(name)
@@ -115,6 +187,27 @@ class _ImportTable:
                 if spec is not None:
                     specs.add(spec)
         return frozenset(specs)
+
+    def unresolved_names(self, expr: ast.expr) -> set[str]:
+        """Return names referenced in *expr* that resolve to no import or builtin.
+
+        A captured default expression can only be rendered safely if every
+        free name is reproducible in the generated file — i.e. it comes from an
+        import (in this table) or is a Python builtin. A name bound by a
+        module-level assignment or a relative import is *not* reproducible, so
+        rendering ``default_factory=lambda: <expr>`` would raise ``NameError``.
+        Callers use this to fall back to ``DERIVED`` instead.
+        """
+        referenced = {
+            sub.id
+            for sub in ast.walk(expr)
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load)
+        }
+        return {
+            name
+            for name in referenced
+            if self.resolve(name) is None and name not in _BUILTIN_NAMES
+        }
 
 
 def _leading_comment(source_lines: list[str], lineno: int) -> str:
@@ -179,6 +272,47 @@ def _try_literal(node: ast.expr) -> tuple[bool, object]:
         return False, None
 
 
+def _iter_scoped_statements(stmt: ast.AST) -> Iterator[ast.AST]:
+    """Yield statements nested in *stmt* without crossing a scope boundary.
+
+    Descends into control-flow bodies (``if``/``for``/``while``/``try``/
+    ``with``) but stops at any node that opens a new scope (``def``/``class``/
+    ``lambda``), so a variable local to a nested function is never mistaken for
+    a setting.
+    """
+    stack: list[ast.AST] = list(ast.iter_child_nodes(stmt))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, _SCOPE_NODES):
+            continue
+        yield node
+        stack.extend(ast.iter_child_nodes(node))
+
+
+def _assignment_pairs(
+    targets: Sequence[ast.expr], value: ast.expr
+) -> list[tuple[ast.Name, ast.expr]]:
+    """Pair assignment target names with their value expressions.
+
+    Handles both ``NAME = <expr>`` and literal tuple/list unpacking
+    (``A, B = 1, 2``); the latter would otherwise be dropped silently. Targets
+    that are not plain names (attribute/subscript/star) and unpackings whose
+    shapes do not line up are skipped.
+    """
+    pairs: list[tuple[ast.Name, ast.expr]] = []
+    for target in targets:
+        if isinstance(target, ast.Name):
+            pairs.append((target, value))
+        elif isinstance(target, ast.Tuple | ast.List) and isinstance(
+            value, ast.Tuple | ast.List
+        ):
+            if len(target.elts) == len(value.elts):
+                for tgt_elt, val_elt in zip(target.elts, value.elts, strict=True):
+                    if isinstance(tgt_elt, ast.Name):
+                        pairs.append((tgt_elt, val_elt))
+    return pairs
+
+
 class StaticModuleInspector:
     """Discover settings by parsing a module's source with :mod:`ast`.
 
@@ -230,13 +364,13 @@ class StaticModuleInspector:
                 stmt, imports, source, source_lines, fields, conditional=False
             )
 
-        # Conditional assignments (inside if/try/for bodies) — a single
-        # snapshot would freeze one branch, so these render as DERIVED.
+        # Conditional assignments (inside if/try/for/with bodies) — a single
+        # snapshot would freeze one branch, so these render as DERIVED. Walk
+        # only control-flow bodies, never descending into a nested def/class
+        # (a local there is not a Django setting).
         for stmt in tree.body:
-            if isinstance(stmt, ast.If | ast.Try | ast.For | ast.With):
-                for inner in ast.walk(stmt):
-                    if inner is stmt:
-                        continue
+            if isinstance(stmt, ast.If | ast.Try | ast.For | ast.While | ast.With):
+                for inner in _iter_scoped_statements(stmt):
                     self._collect_assignment(
                         inner,
                         imports,
@@ -264,8 +398,8 @@ class StaticModuleInspector:
         value = stmt.value
         if value is None:
             return
-        for target in targets:
-            if not isinstance(target, ast.Name) or not target.id.isupper():
+        for target, value_expr in _assignment_pairs(targets, value):
+            if not target.id.isupper():
                 continue
             name = target.id
             # An unconditional assignment wins over a conditional one for the
@@ -273,7 +407,7 @@ class StaticModuleInspector:
             if name in fields and conditional:
                 continue
             fields[name] = self._build_field(
-                name, value, imports, source, source_lines, conditional=conditional
+                name, value_expr, imports, source, source_lines, conditional=conditional
             )
 
     def _build_field(
@@ -296,155 +430,141 @@ class StaticModuleInspector:
             lineno=lineno,
             conditional=conditional,
         )
+        reader = self._reader_info(value)
+        aliases = reader.aliases if reader else ()
 
-        aliases, reader_type, required = self._reader_info(value)
-
-        # Redaction takes precedence: never emit an observed/secret value.
-        if _looks_secret(name):
-            type_ref = reader_type or TypeRef("str", needs_refinement=True)
+        def field(
+            type_ref: TypeRef, default: Default, *, required: bool = False
+        ) -> SettingField:
             return SettingField(
                 name=name,
-                type=type_ref.with_optional(),
-                default=Default.redacted(),
+                type=type_ref,
+                default=default,
                 env_aliases=aliases,
                 required=required,
                 description=description,
                 provenance=prov,
             )
 
+        # Redaction takes precedence: never emit an observed/secret value. A
+        # required secret still renders REQUIRED (enforced, no value written);
+        # otherwise it is optional-None.
+        if _looks_secret(name):
+            type_ref = (
+                reader.type_ref if reader else TypeRef("str", needs_refinement=True)
+            )
+            if reader and reader.required:
+                return field(type_ref, Default.required(), required=True)
+            return field(type_ref.with_optional(), Default.redacted())
+
         # A conditionally-assigned setting is DERIVED — reproduce the branch in
         # a validator rather than freeze one side of it.
         if conditional:
-            type_ref = reader_type or self._infer_expr_type(value, imports)
-            return SettingField(
-                name=name,
-                type=type_ref.with_optional(),
-                default=Default.derived(),
-                env_aliases=aliases,
-                description=description,
-                provenance=prov,
-            )
+            type_ref = reader.type_ref if reader else self._infer_expr_type(value)
+            return field(type_ref.with_optional(), Default.derived())
 
-        # A required env read with no default → REQUIRED (restores the
-        # required-ness v1 erased).
-        if required:
-            type_ref = reader_type or TypeRef("str")
-            return SettingField(
-                name=name,
-                type=type_ref,
-                default=Default.required(),
-                env_aliases=aliases,
-                required=True,
-                description=description,
-                provenance=prov,
-            )
+        # A recognised env reader: derive the default from the reader's own
+        # default argument — never re-emit the reader *call* (which would read
+        # os.environ directly or reference an un-imported parser object).
+        if reader is not None:
+            if reader.required:
+                return field(reader.type_ref, Default.required(), required=True)
+            if reader.default_node is None:
+                # e.g. os.getenv("X") with no default → optional, None.
+                return field(reader.type_ref.with_optional(), Default.literal_(None))
+            default, optional = self._default_for(reader.default_node, imports, source)
+            return field(reader.type_ref.with_optional(optional=optional), default)
 
-        # Pure literal → LITERAL/FACTORY.
-        is_literal, literal_value = _try_literal(value)
+        # Plain assignment: literal, reproducible expression, or DERIVED.
+        default, optional = self._default_for(value, imports, source)
+        if default.strategy is DefaultStrategy.DERIVED:
+            type_ref = self._infer_expr_type(value).with_optional()
+        else:
+            type_ref = self._value_type(value).with_optional(optional=optional)
+        return field(type_ref, default)
+
+    def _default_for(
+        self, node: ast.expr, imports: _ImportTable, source: str
+    ) -> tuple[Default, bool]:
+        """Return ``(Default, optional)`` for a value/default expression.
+
+        Literals become ``LITERAL``/``FACTORY``; a reproducible expression
+        (every free name resolves to an import or builtin) becomes ``EXPR``;
+        anything referencing a module-local or relatively-imported name becomes
+        ``DERIVED`` so the generated file cannot raise ``NameError``.
+        """
+        is_literal, literal_value = _try_literal(node)
         if is_literal:
-            type_ref = reader_type or _literal_type(literal_value)
             factory = isinstance(literal_value, list | dict | set)
             default = Default.literal_(literal_value, factory=factory)
-            optional = literal_value is None
-            return SettingField(
-                name=name,
-                type=type_ref.with_optional(optional=optional),
-                default=default,
-                env_aliases=aliases,
-                description=description,
-                provenance=prov,
-            )
+            return default, literal_value is None
+        if imports.unresolved_names(node):
+            return Default.derived(), True
+        expr_src = ast.get_source_segment(source, node) or ""
+        return Default.expr_(expr_src, imports.imports_for(node)), False
 
-        # Anything else → capture the verbatim source expression (EXPR).
-        expr_src = ast.get_source_segment(source, value) or ""
-        expr_imports = imports.imports_for(value)
-        type_ref = reader_type or self._infer_expr_type(value, imports)
-        return SettingField(
-            name=name,
-            type=type_ref,
-            default=Default.expr_(expr_src, expr_imports),
-            env_aliases=aliases,
-            description=description,
-            provenance=prov,
-        )
+    @staticmethod
+    def _value_type(node: ast.expr) -> TypeRef:
+        """Type for a non-reader plain assignment (literal or reproducible expr)."""
+        is_literal, literal_value = _try_literal(node)
+        if is_literal:
+            return _literal_type(literal_value)
+        return StaticModuleInspector._infer_expr_type(node)
 
-    def _reader_info(
-        self, value: ast.expr
-    ) -> tuple[tuple[str, ...], TypeRef | None, bool]:
-        """Extract (env aliases, reader type, required) from an env-reader call.
+    def _reader_info(self, value: ast.expr) -> _ReaderInfo | None:
+        """Extract reader metadata from an env-reader expression, or ``None``.
 
-        Recognises ``obj.get_string("VAR")`` / ``env.str("VAR")`` style calls,
-        ``os.getenv("VAR"[, default])``, and ``os.environ["VAR"]`` /
-        ``os.environ.get("VAR")``. Returns empty/None/False when *value* is not
-        a recognised reader.
+        Recognises ``obj.get_string("VAR"[, default])`` / ``env.str("VAR")``
+        typed readers, ``os.getenv("VAR"[, default])`` / ``os.environ.get(...)``,
+        and ``os.environ["VAR"]``.
         """
-        # os.environ["VAR"]  → subscript
+        # os.environ["VAR"] → subscript; missing key raises KeyError → required.
         if isinstance(value, ast.Subscript):
             if _dotted(value.value) == "os.environ" and isinstance(
                 value.slice, ast.Constant
             ):
                 var = value.slice.value
                 if isinstance(var, str):
-                    return (var,), TypeRef("str"), True
-            return (), None, False
+                    return _ReaderInfo((var,), TypeRef("str"), required=True)
+            return None
 
         if not isinstance(value, ast.Call):
-            return (), None, False
+            return None
 
         target = _call_target(value)
         if target is None:
-            return (), None, False
+            return None
         method = target.rsplit(".", 1)[-1]
 
-        # os.getenv / os.environ.get: first str arg is the alias; a second
-        # positional arg (or `default=`) means not required.
+        # os.getenv / os.environ.get return None when absent → never required.
         if target in ("os.getenv", "os.environ.get"):
-            aliases = self._first_str_args(value)
-            has_default = len(value.args) >= 2 or any(
-                kw.arg == "default" for kw in value.keywords
+            return _ReaderInfo(
+                _reader_alias(value),
+                TypeRef("str"),
+                required=False,
+                default_node=_reader_default_node(value),
             )
-            return aliases, TypeRef("str"), not has_default
 
-        # mitol / django-environ style typed readers.
+        # Typed readers. Builtin-shadowing names (str/int/bool/float) count
+        # only as attribute calls (env.str(...)), never a bare int(...) cast.
         if method in _READER_TYPES:
-            base, imps = _READER_TYPES[method]
-            aliases = self._first_str_args(value)
-            required = self._reader_required(value)
-            return aliases, TypeRef(base, imps), required
+            if method in _ATTRIBUTE_ONLY_READERS and not isinstance(
+                value.func, ast.Attribute
+            ):
+                return None
+            default_node = _reader_default_node(value)
+            required = default_node is None and not _reader_required_false(value)
+            return _ReaderInfo(
+                _reader_alias(value),
+                TypeRef(_READER_TYPES[method]),
+                required=required,
+                default_node=default_node,
+            )
 
-        return (), None, False
-
-    @staticmethod
-    def _first_str_args(call: ast.Call) -> tuple[str, ...]:
-        """Return the first string-literal positional arg (the var name) of *call*.
-
-        Only the first positional is the env-var alias; any later string
-        positional is the default value, not another alias.
-        """
-        if call.args and isinstance(call.args[0], ast.Constant):
-            first = call.args[0].value
-            if isinstance(first, str):
-                return (first,)
-        return ()
+        return None
 
     @staticmethod
-    def _reader_required(call: ast.Call) -> bool:
-        """Return True when a typed reader call declares no default value.
-
-        A reader is required when it has no ``default=``/second positional arg
-        and is not explicitly ``required=False``.
-        """
-        for kw in call.keywords:
-            if kw.arg == "required" and isinstance(kw.value, ast.Constant):
-                return bool(kw.value.value)
-            if kw.arg == "default":
-                return False
-        # positional default (arg after the var name)
-        if len(call.args) >= 2:
-            return False
-        return True
-
-    def _infer_expr_type(self, value: ast.expr, imports: _ImportTable) -> TypeRef:
+    def _infer_expr_type(value: ast.expr) -> TypeRef:
         """Best-effort type for a non-literal expression (EXPR default)."""
         if isinstance(value, ast.Call):
             target = _call_target(value)
