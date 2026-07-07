@@ -14,11 +14,16 @@ leaves room for **preserved** regions the writer keeps byte-for-byte. See
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from django_aqueduct.discovery.ir import (
     DefaultStrategy,
     ImportSpec,
     SettingField,
 )
+
+if TYPE_CHECKING:
+    from django_aqueduct.codegen.dict_schema import TypedDictDef
 
 _COMMENT_BLOCK = """\
 # ruff: noqa
@@ -120,8 +125,23 @@ def _render_default_expr(f: SettingField) -> tuple[str, str]:
     return f"default={_render_literal(d.literal)}", ""
 
 
-def _render_field(f: SettingField) -> str:
-    """Render one field as a Pydantic ``Field`` declaration (indented, no newline)."""
+def _render_typeddict(td: TypedDictDef) -> str:
+    """Render a ``TypedDict`` class definition (``total=False``) as source."""
+    lines = [f"class {td.class_name}(TypedDict, total=False):"]
+    if not td.fields:
+        lines.append("    pass")
+    else:
+        for field in td.fields:
+            lines.append(f"    {field.name}: {field.annotation}")
+    return "\n".join(lines) + "\n"
+
+
+def _render_field(f: SettingField, annotation_override: str | None = None) -> str:
+    """Render one field as a Pydantic ``Field`` declaration (indented, no newline).
+
+    ``annotation_override`` supplies a genson-enriched annotation (e.g.
+    ``dict[str, DatabasesEntry]``) in place of the IR's ``dict[str, Any]``.
+    """
     default_kwarg, comment = _render_default_expr(f)
 
     # A `default=None` is only valid if the annotation accepts None. Widen at
@@ -130,7 +150,7 @@ def _render_field(f: SettingField) -> str:
     type_ref = f.type
     if default_kwarg == "default=None" and not type_ref.optional:
         type_ref = type_ref.with_optional()
-    annotation = type_ref.render()
+    annotation = annotation_override or type_ref.render()
 
     parts = [default_kwarg]
     if f.env_aliases:
@@ -155,13 +175,28 @@ class ModelRenderer:
     """
 
     def __init__(
-        self, fields: list[SettingField], *, class_name: str = "AqueductSettings"
+        self,
+        fields: list[SettingField],
+        *,
+        class_name: str = "AqueductSettings",
+        extra: str = "allow",
     ) -> None:
-        """Store the fields and target class name to render."""
+        """Store the fields, class name, and model ``extra`` strictness.
+
+        Args:
+            fields: The IR fields to render.
+            class_name: Name of the generated ``BaseSettings`` subclass.
+            extra: Pydantic ``extra`` policy — ``"allow"`` (tolerate & keep
+                un-modeled keys), ``"ignore"`` (drop them), or ``"forbid"``
+                (reject them, enabling typo detection).
+        """
+        if extra not in ("allow", "ignore", "forbid"):
+            raise ValueError(f"extra must be allow/ignore/forbid, got {extra!r}")
         self._fields = fields
         self._class_name = class_name
+        self._extra = extra
 
-    def _render_grouped_fields(self) -> list[str]:
+    def _render_grouped_fields(self, enriched: dict[str, str]) -> list[str]:
         """Render fields grouped by owning package (or source module) with headers.
 
         Groups are ordered django-first, project-last, everything else
@@ -197,8 +232,44 @@ class ModelRenderer:
             if emit_headers:
                 out.append(f"    # ===== {group_name} =====")
             for f in groups[group_name]:
-                out.append(_render_field(f))
+                out.append(_render_field(f, enriched.get(f.name)))
         return out
+
+    def _enrich_dicts(self) -> tuple[dict[str, str], list[TypedDictDef]]:
+        """Return ``(enriched_annotations, typeddict_defs)`` for dict-valued fields.
+
+        Uses genson (via ``dict_schema.enrich_dict_annotation``) to turn a
+        ``dict[str, Any]`` literal into a precise ``dict[str, XxxEntry]`` plus
+        the ``TypedDict`` definitions. Silently no-ops when genson is not
+        installed (the ``[codegen]`` extra) or a value is not enrichable.
+        """
+        try:
+            from django_aqueduct.codegen.dict_schema import (  # noqa: PLC0415
+                enrich_dict_annotation,
+            )
+        except ImportError:
+            return {}, []
+
+        enriched: dict[str, str] = {}
+        defs: list[TypedDictDef] = []
+        seen: set[str] = set()
+        literal_kinds = (DefaultStrategy.LITERAL, DefaultStrategy.FACTORY)
+        for f in self._fields:
+            if f.default.strategy not in literal_kinds:
+                continue
+            if not isinstance(f.default.literal, dict) or not f.default.literal:
+                continue
+            annotation, new_defs = enrich_dict_annotation(f.name, f.default.literal)
+            if annotation == "dict[str, Any]":
+                continue
+            # Skip if a TypedDict name would collide with an already-emitted one.
+            if any(d.class_name in seen for d in new_defs):
+                continue
+            enriched[f.name] = annotation
+            for d in new_defs:
+                seen.add(d.class_name)
+            defs.extend(new_defs)
+        return enriched, defs
 
     def _all_imports(self) -> frozenset[ImportSpec]:
         specs: set[ImportSpec] = set(_BASE_IMPORTS)
@@ -210,7 +281,11 @@ class ModelRenderer:
 
     def render(self) -> str:
         """Return the complete generated module as a string."""
-        imports = _render_imports(self._all_imports())
+        enriched, typeddict_defs = self._enrich_dicts()
+        specs = set(self._all_imports())
+        if typeddict_defs:
+            specs.add(ImportSpec("typing", "TypedDict"))
+        imports = _render_imports(frozenset(specs))
 
         lines: list[str] = []
         lines.append(_COMMENT_BLOCK)
@@ -220,11 +295,19 @@ class ModelRenderer:
         lines.append(region_close("generated", "imports").lstrip())
         lines.append("")
         lines.append("")
+        if typeddict_defs:
+            lines.append(region_open("generated", "typeddicts").lstrip())
+            for td in typeddict_defs:
+                lines.append(_render_typeddict(td))
+            lines.append(region_close("generated", "typeddicts").lstrip())
+            lines.append("")
+            lines.append("")
         docstring = (
             '    """Typed Django settings model generated by django-aqueduct."""'
         )
         config_line = (
-            '    model_config = SettingsConfigDict(env_prefix="", extra="allow")'
+            f"    model_config = SettingsConfigDict("
+            f'env_prefix="", extra="{self._extra}")'
         )
         lines.append(f"class {self._class_name}(BaseSettings):")
         lines.append(docstring)
@@ -232,7 +315,7 @@ class ModelRenderer:
         lines.append(config_line)
         lines.append("")
         lines.append(region_open("generated", "fields"))
-        lines.extend(self._render_grouped_fields())
+        lines.extend(self._render_grouped_fields(enriched))
         lines.append(region_close("generated", "fields"))
         lines.append("")
         lines.append(region_open("preserved", "validators"))
