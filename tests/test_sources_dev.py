@@ -88,7 +88,7 @@ def test_valid_config_builds_source() -> None:
     )
     assert source is not None
     assert source._vault_url == "https://v"
-    assert source._vault_path == "myapp/prod"
+    assert source._vault_paths == ("myapp/prod",)
     assert source._mount_point == "kv"
     assert source._kv_version == "1"
     assert source._role == "myapp"

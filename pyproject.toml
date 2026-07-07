@@ -39,6 +39,7 @@ vault = ["hvac>=2.0"]
 aws = ["boto3>=1.26"]
 mitol = ["mitol-django-common>=2023.1.1"]
 derivations = ["dj-database-url>=2.0"]
+yaml = ["pyyaml>=6.0"]
 
 [project.urls]
 Homepage = "https://github.com/mitodl/django-aqueduct"
@@ -66,7 +67,9 @@ dev = [
   "pytest>=8.0",
   "pytest-django>=4.8",
   "pytest-mock>=3.14",
+  "pyyaml>=6.0",
   "ruff>=0.4",
+  "types-pyyaml>=6.0",
 ]
 
 [tool.pytest.ini_options]
