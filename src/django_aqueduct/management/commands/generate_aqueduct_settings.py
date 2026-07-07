@@ -96,6 +96,19 @@ class Command(BaseCommand):
             help=("Output file path. Use '-' (the default) to write to stdout."),
         )
         parser.add_argument(
+            "--engine",
+            choices=["v1", "v2"],
+            default="v1",
+            help=(
+                "Discovery/render engine. 'v1' (default) imports the settings "
+                "module and reads resolved runtime values. 'v2' uses static "
+                "AST discovery (deterministic, secret-safe, recovers env "
+                "aliases/required-ness/source expressions) via "
+                "StaticModuleInspector + ModelRenderer. 'v2' currently "
+                "supports --format python only."
+            ),
+        )
+        parser.add_argument(
             "--include-envparser",
             action="store_true",
             default=None,
@@ -119,12 +132,75 @@ class Command(BaseCommand):
             ),
         )
 
+    def _handle_v2(
+        self, module_paths: list[str], output_path: str, output_format: str
+    ) -> None:
+        """Run the v2 static-discovery + IR-renderer pipeline."""
+        from django_aqueduct.codegen.renderer import ModelRenderer  # noqa: PLC0415
+        from django_aqueduct.discovery.ir import SettingField  # noqa: PLC0415
+        from django_aqueduct.discovery.static import (  # noqa: PLC0415
+            StaticModuleInspector,
+        )
+
+        if output_format != "python":
+            raise CommandError("--engine v2 supports --format python only.")
+        if not module_paths:
+            raise CommandError("--engine v2 requires --modules.")
+
+        # Dedup by name across modules: a later module (e.g. production
+        # overriding base) wins, so the generated class has one attribute per
+        # name instead of duplicate lines where only the last silently applies.
+        by_name: dict[str, SettingField] = {}
+        for module_path in module_paths:
+            try:
+                for f in StaticModuleInspector(module_path).discover():
+                    by_name[f.name] = f
+            except (ImportError, OSError, SyntaxError) as exc:
+                raise CommandError(
+                    f"Static discovery failed for {module_path!r}: {exc}"
+                ) from exc
+
+        fields: list[SettingField] = [by_name[name] for name in sorted(by_name)]
+        output = ModelRenderer(fields).render()
+        self._write(output, output_path)
+
+    def _write(self, output: str, output_path: str) -> None:
+        """Write *output* to *output_path* ('-' means stdout)."""
+        if output_path == "-":
+            self.stdout.write(output, ending="")
+            return
+        try:
+            with open(output_path, "w", encoding="utf-8") as fh:  # noqa: PTH123
+                fh.write(output)
+        except OSError as exc:
+            raise CommandError(f"Cannot write to {output_path!r}: {exc}") from exc
+        self.stdout.write(
+            self.style.SUCCESS(f"Settings model written to {output_path}")
+        )
+
     def handle(self, *args: object, **options: object) -> None:
         """Execute the command."""
         modules_str = str(options.get("modules", "") or "")
         output_path = str(options.get("output", "-") or "-")
         output_format = str(options.get("format", "python") or "python")
+        engine = str(options.get("engine", "v1") or "v1")
         include_envparser: bool | None = options.get("include_envparser")  # type: ignore[assignment]
+
+        module_paths = [m.strip() for m in modules_str.split(",") if m.strip()]
+
+        if engine == "v2":
+            # Reject flags v2 does not yet honor rather than silently dropping
+            # them (they are resolved only in the v1 path below).
+            if options.get("include_envparser"):
+                raise CommandError(
+                    "--include-envparser is not yet supported under --engine v2."
+                )
+            if options.get("attribute_packages"):
+                raise CommandError(
+                    "--attribute-packages is not yet supported under --engine v2."
+                )
+            self._handle_v2(module_paths, output_path, output_format)
+            return
 
         # Resolve --include-envparser auto-detection
         if include_envparser is None:
@@ -133,7 +209,6 @@ class Command(BaseCommand):
         fields: list[DiscoveredField] = []
 
         # Module inspector(s)
-        module_paths = [m.strip() for m in modules_str.split(",") if m.strip()]
         for module_path in module_paths:
             try:
                 inspector = ModuleInspector(module_path)
@@ -189,14 +264,4 @@ class Command(BaseCommand):
         else:
             output = SettingsModelGenerator(fields).render()
 
-        if output_path == "-":
-            self.stdout.write(output, ending="")
-        else:
-            try:
-                with open(output_path, "w", encoding="utf-8") as fh:  # noqa: PTH123
-                    fh.write(output)
-                self.stdout.write(
-                    self.style.SUCCESS(f"Settings model written to {output_path}")
-                )
-            except OSError as exc:
-                raise CommandError(f"Cannot write to {output_path!r}: {exc}") from exc
+        self._write(output, output_path)
