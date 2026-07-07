@@ -347,12 +347,15 @@ BUILTIN_RULES: list[tuple[str, str]] = [
     # ---- django-cors-headers ----
     ("CORS_", "django-cors-headers"),
     # ---- django-oauth-toolkit ----
+    # OAUTH2_ only; a bare OAUTH_ prefix is too broad (matches unrelated
+    # project settings) and was dropped.
     ("OAUTH2_", "django-oauth-toolkit"),
-    ("OAUTH_", "django-oauth-toolkit"),
-    # ---- djangorestframework-jwt / edx-drf-extensions ----
-    ("JWT_", "djangorestframework-jwt"),
-    # ---- django-storages / boto3 ----
-    ("AWS_", "boto3"),
+    # ---- JWT auth (edx-drf-extensions; JWT_AUTH etc.) ----
+    # Was mis-attributed to the abandoned djangorestframework-jwt package.
+    ("JWT_", "edx-drf-extensions"),
+    # ---- AWS storage ----
+    # AWS_* settings are consumed by django-storages, not boto3 directly.
+    ("AWS_", "django-storages"),
     # ---- django-push-notifications ----
     ("PUSH_NOTIFICATIONS_", "django-push-notifications"),
     ("FCM_", "django-push-notifications"),

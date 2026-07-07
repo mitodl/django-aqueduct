@@ -103,3 +103,15 @@ def test_parity_ignore_stripped(tmp_path: Path) -> None:
         "[tool.aqueduct]\nparity_ignore = ['  SECRET_KEY ', '', '   ', 'X']\n",
     )
     assert load_config(root).parity_ignore == ["SECRET_KEY", "X"]
+
+
+def test_plugins_and_attribution_rules_config(tmp_path: Path) -> None:
+    root = _write_pyproject(
+        tmp_path,
+        "[tool.aqueduct]\n"
+        "use_plugins = true\n"
+        "attribution_rules = [['MYAPP_', 'my-pkg'], ['FOO', 'foo-pkg']]\n",
+    )
+    cfg = load_config(root)
+    assert cfg.use_plugins is True
+    assert cfg.attribution_rules == [("MYAPP_", "my-pkg"), ("FOO", "foo-pkg")]
