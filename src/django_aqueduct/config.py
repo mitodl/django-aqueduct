@@ -40,6 +40,8 @@ class AqueductConfig:
     parity_model: str | None = None
     parity_legacy: str | None = None
     parity_ignore: list[str] = field(default_factory=list)
+    use_plugins: bool = False
+    attribution_rules: list[tuple[str, str]] = field(default_factory=list)
 
 
 def find_pyproject(start: Path | None = None) -> Path | None:
@@ -105,5 +107,14 @@ def load_config(start: Path | None = None) -> AqueductConfig:
     if isinstance(parity_ignore, list):
         cfg.parity_ignore = [
             stripped for x in parity_ignore if (stripped := str(x).strip())
+        ]
+    if isinstance(table.get("use_plugins"), bool):
+        cfg.use_plugins = table["use_plugins"]
+    rules = table.get("attribution_rules")
+    if isinstance(rules, list):
+        cfg.attribution_rules = [
+            (str(r[0]), str(r[1]))
+            for r in rules
+            if isinstance(r, list | tuple) and len(r) == 2
         ]
     return cfg

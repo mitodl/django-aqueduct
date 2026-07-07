@@ -395,3 +395,20 @@ class TestPackageAttributor:
         result = attributor.attribute([_make_field("CSRF_COOKIE_SECURE")])
         # Extra rules rank below the dynamic map; Django core wins
         assert result["CSRF_COOKIE_SECURE"] == LABEL_DJANGO
+
+
+def test_builtin_rules_fixed_misattributions() -> None:
+    """AWS_ → django-storages, JWT_ → edx-drf-extensions, bare OAUTH_ dropped."""
+    from django_aqueduct.discovery.package_attributor import BUILTIN_RULES
+
+    rules = dict(BUILTIN_RULES)
+    assert rules["AWS_"] == "django-storages"
+    assert rules["JWT_"] == "edx-drf-extensions"
+    assert "OAUTH_" not in rules
+    assert rules["OAUTH2_"] == "django-oauth-toolkit"
+
+
+def test_extra_rules_reachable() -> None:
+    attr = PackageAttributor(ast_scan_max_files=0, extra_rules=[("MYAPP_", "my-pkg")])
+    result = attr.attribute([_make_field("MYAPP_TOKEN")])
+    assert result["MYAPP_TOKEN"] == "my-pkg"

@@ -179,3 +179,33 @@ print("OK")
     )
     assert result.returncode == 0, result.stderr
     assert "OK" in result.stdout
+
+
+# ---- bootstrap hook + model-instance exposure ----
+
+
+def test_pre_configure_runs_before_injection() -> None:
+    from pydantic_settings import BaseSettings
+
+    from django_aqueduct import get_configured_model
+    from django_aqueduct.adapter import configure_django_settings
+
+    class _S(BaseSettings):
+        DEBUG: bool = True
+        SENTRY_DSN: str = "https://sentry.example/1"
+
+    seen = {}
+
+    def _pre(instance):
+        # Runs before scope is populated; has typed access to the model.
+        seen["dsn"] = instance.SENTRY_DSN
+        seen["scope_has_debug"] = "DEBUG" in scope
+
+    scope: dict = {}
+    configure_django_settings(_S, scope=scope, pre_configure=_pre)
+
+    assert seen["dsn"] == "https://sentry.example/1"
+    assert seen["scope_has_debug"] is False  # ran before injection
+    assert scope["DEBUG"] is True
+    assert scope["AQUEDUCT_MODEL"].SENTRY_DSN == "https://sentry.example/1"
+    assert get_configured_model().SENTRY_DSN == "https://sentry.example/1"

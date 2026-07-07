@@ -1,11 +1,26 @@
 """Adapter functions for injecting Pydantic settings into Django."""
 
+from __future__ import annotations
+
 import importlib
 import inspect
-from types import ModuleType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic_settings import BaseSettings
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from types import ModuleType
+
+# The most recently configured model instance, exposed for runtime code and the
+# parity command to reach typed values without re-instantiating (also injected
+# into the settings scope as ``AQUEDUCT_MODEL``).
+_configured_model: BaseSettings | None = None
+
+
+def get_configured_model() -> BaseSettings | None:
+    """Return the model instance from the last ``configure_django_settings`` call."""
+    return _configured_model
 
 
 def _collect_base_settings(
@@ -33,6 +48,8 @@ def configure_django_settings(
     model_class: type[BaseSettings],
     scope: dict[str, Any] | None = None,
     base: str | ModuleType | dict[str, Any] | None = None,
+    *,
+    pre_configure: Callable[[BaseSettings], None] | None = None,
 ) -> None:
     """Instantiate *model_class* and inject its values into a Django settings module.
 
@@ -72,6 +89,11 @@ def configure_django_settings(
         base: Optional base settings to overlay onto — a dotted module path,
             an imported module, or a mapping.  When omitted the model fully
             replaces the scope (legacy behaviour).
+        pre_configure: Optional callback invoked with the validated model
+            instance *before* its values are injected — the supported place to
+            initialise Sentry (or anything else) with typed values before
+            Django settings exist. The instance is also exposed as
+            ``settings.AQUEDUCT_MODEL`` and via :func:`get_configured_model`.
     """
     if scope is None:
         frame = inspect.currentframe()
@@ -79,7 +101,18 @@ def configure_django_settings(
             raise RuntimeError("Cannot determine caller frame")
         scope = frame.f_back.f_globals
 
+    # Two-phase bootstrap: build the validated model, hand it to *pre_configure*
+    # (the place to initialise Sentry with typed values before Django settings
+    # exist), then inject. Exposing the instance lets shims stop poking into
+    # model_fields[...].default and re-reading env with legacy helpers.
     instance = model_class()
+    if pre_configure is not None:
+        pre_configure(instance)
+
+    global _configured_model  # noqa: PLW0603
+    _configured_model = instance
+    scope["AQUEDUCT_MODEL"] = instance
+
     model_values = instance.model_dump()
 
     base_values = _collect_base_settings(base)

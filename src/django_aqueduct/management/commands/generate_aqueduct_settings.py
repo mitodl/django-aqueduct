@@ -147,6 +147,15 @@ class Command(BaseCommand):
             ),
         )
         parser.add_argument(
+            "--use-plugins",
+            action="store_true",
+            default=None,
+            help=(
+                "Include fields from inspector plugins registered under the "
+                "'django_aqueduct.inspectors' entry-point group."
+            ),
+        )
+        parser.add_argument(
             "--check",
             action="store_true",
             default=False,
@@ -222,6 +231,21 @@ class Command(BaseCommand):
             except ImportError as exc:
                 raise CommandError(str(exc)) from exc
 
+        use_plugins = options.get("use_plugins")
+        if use_plugins is None:
+            use_plugins = cfg.use_plugins
+        if use_plugins:
+            from django_aqueduct.registry import (  # noqa: PLC0415
+                RegistryError,
+                discover_from_plugins,
+            )
+
+            try:
+                for f in discover_from_plugins():
+                    by_name.setdefault(f.name, f)
+            except RegistryError as exc:
+                raise CommandError(str(exc)) from exc
+
         fields: list[SettingField] = [by_name[name] for name in sorted(by_name)]
 
         if not fields:
@@ -233,7 +257,7 @@ class Command(BaseCommand):
             )
 
         if attribute_packages:
-            self._attribute(fields)
+            self._attribute(fields, cfg.attribution_rules)
 
         if output_format == "jsonschema":
             import json  # noqa: PLC0415
@@ -248,8 +272,14 @@ class Command(BaseCommand):
             self._emit(output, output_path, output_format, reset=reset)
 
     @staticmethod
-    def _attribute(fields: list[SettingField]) -> None:
-        """Populate ``owning_package`` on every field (in place)."""
+    def _attribute(
+        fields: list[SettingField], extra_rules: list[tuple[str, str]]
+    ) -> None:
+        """Populate ``owning_package`` on every field (in place).
+
+        ``extra_rules`` are ``[tool.aqueduct] attribution_rules`` (prefix/exact
+        pattern → package), prepended ahead of the built-in rules.
+        """
         from django_aqueduct.discovery.package_attributor import (  # noqa: PLC0415
             PackageAttributor,
         )
@@ -261,7 +291,10 @@ class Command(BaseCommand):
         except Exception:  # noqa: BLE001
             installed_apps = []
 
-        attribution = PackageAttributor(installed_apps=installed_apps).attribute(fields)
+        attributor = PackageAttributor(
+            installed_apps=installed_apps, extra_rules=extra_rules or None
+        )
+        attribution = attributor.attribute(fields)
         for f in fields:
             f.owning_package = attribution.get(f.name, "project")
 
