@@ -307,3 +307,18 @@ def test_generated_model_instantiates(fields, tmp_path):
     )
     assert inst.APP_BASE_URL == "https://example.test"
     assert inst.SESSION_AGE.days == 14
+
+
+def test_golden_file_matches(fields):
+    """Rendered output must match the committed golden file byte-for-byte.
+
+    Regenerate with:
+        uv run python -c "import sys; sys.path.insert(0,'testapp'); \
+from django_aqueduct.discovery.static import StaticModuleInspector as S; \
+from django_aqueduct.codegen.renderer import ModelRenderer as R; \
+open('tests/golden/v2_fixture_model.py.golden','w').write(R(S('v2_fixture_settings').discover()).render())"
+    """
+    import pathlib
+
+    golden = pathlib.Path(__file__).parent / "golden" / "v2_fixture_model.py.golden"
+    assert ModelRenderer(fields).render() == golden.read_text(encoding="utf-8")

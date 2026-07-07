@@ -37,6 +37,9 @@ class AqueductConfig:
     class_name: str = "AqueductSettings"
     output_format: str = "python"
     extra: str = "allow"
+    parity_model: str | None = None
+    parity_legacy: str | None = None
+    parity_ignore: list[str] = field(default_factory=list)
 
 
 def find_pyproject(start: Path | None = None) -> Path | None:
@@ -94,4 +97,13 @@ def load_config(start: Path | None = None) -> AqueductConfig:
                 f"expected one of {', '.join(_VALID_EXTRA)}."
             )
         cfg.extra = extra
+    if isinstance(table.get("parity_model"), str):
+        cfg.parity_model = table["parity_model"]
+    if isinstance(table.get("parity_legacy"), str):
+        cfg.parity_legacy = table["parity_legacy"]
+    parity_ignore = table.get("parity_ignore")
+    if isinstance(parity_ignore, list):
+        cfg.parity_ignore = [
+            stripped for x in parity_ignore if (stripped := str(x).strip())
+        ]
     return cfg

@@ -81,3 +81,25 @@ def test_invalid_extra_raises(tmp_path: Path) -> None:
     root = _write_pyproject(tmp_path, "[tool.aqueduct]\nextra = 'nope'\n")
     with pytest.raises(ConfigError, match="extra='nope' is invalid"):
         load_config(root)
+
+
+def test_parity_config_loaded(tmp_path: Path) -> None:
+    root = _write_pyproject(
+        tmp_path,
+        "[tool.aqueduct]\n"
+        "parity_model = 'a.m:AqueductSettings'\n"
+        "parity_legacy = 'a.settings'\n"
+        "parity_ignore = ['SECRET_KEY', 'ENVIRONMENT']\n",
+    )
+    cfg = load_config(root)
+    assert cfg.parity_model == "a.m:AqueductSettings"
+    assert cfg.parity_legacy == "a.settings"
+    assert cfg.parity_ignore == ["SECRET_KEY", "ENVIRONMENT"]
+
+
+def test_parity_ignore_stripped(tmp_path: Path) -> None:
+    root = _write_pyproject(
+        tmp_path,
+        "[tool.aqueduct]\nparity_ignore = ['  SECRET_KEY ', '', '   ', 'X']\n",
+    )
+    assert load_config(root).parity_ignore == ["SECRET_KEY", "X"]
