@@ -1,32 +1,31 @@
-"""Settings inspector for mitol.common.envs.EnvParser registries.
+"""Settings inspector for ``mitol.common.envs.EnvParser`` registries (v2 IR).
 
-This inspector is part of the ``[mitol]`` optional extra. It requires
-``mitol-django-common`` to be installed::
+Part of the ``[mitol]`` optional extra. Requires ``mitol-django-common``::
 
     pip install django-aqueduct[mitol]
+
+Emits :class:`~django_aqueduct.discovery.ir.SettingField` IR so it composes
+with static discovery under the single v2 pipeline.
 """
+
+from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from django_aqueduct.discovery.base import DiscoveredField
-from django_aqueduct.discovery.type_inference import InferenceResult
+from django_aqueduct.discovery.ir import (
+    Default,
+    DiscoveryMethod,
+    Provenance,
+    SettingField,
+)
+from django_aqueduct.discovery.secrets import looks_secret
+from django_aqueduct.discovery.static import _literal_type
 
 if TYPE_CHECKING:
     from mitol.common.envs import EnvParser  # pragma: no cover
 
-# Maps the name of the EnvParser method used to declare a variable to the
-# corresponding Pydantic-compatible type annotation string.
-_PARSER_TYPE_MAP: dict[str, str] = {
-    "get_string": "str",
-    "get_bool": "bool",
-    "get_int": "int",
-    "get_list_literal": "list[Any]",
-    "get_delimited_list": "list[str]",
-    "get_crontab_kwargs": "dict[str, Any]",
-}
 
-
-def _load_env_parser() -> "EnvParser":
+def _load_env_parser() -> EnvParser:
     """Return the global EnvParser instance from mitol.common.envs.
 
     Raises:
@@ -44,56 +43,23 @@ def _load_env_parser() -> "EnvParser":
         ) from exc
 
 
-def _annotation_for_var(env_var: Any) -> InferenceResult:
-    """Return the InferenceResult for an EnvVariable.
-
-    Args:
-        env_var: An ``EnvVariable`` namedtuple instance.
-
-    Returns:
-        An :class:`~django_aqueduct.discovery.type_inference.InferenceResult`.
-    """
-    from django_aqueduct.discovery.type_inference import (  # noqa: PLC0415
-        infer_annotation,
-    )
-
-    return infer_annotation(
-        env_var.value if env_var.value is not None else env_var.default
-    )
-
-
 class EnvParserInspector:
     """Discover settings registered with :class:`mitol.common.envs.EnvParser`.
 
-    Reads the ``_configured_vars`` registry on the global ``env`` singleton
-    and converts each :class:`~mitol.common.envs.EnvVariable` into a
-    :class:`~django_aqueduct.discovery.base.DiscoveredField`.
-
-    Requires the ``[mitol]`` extra::
-
-        pip install django-aqueduct[mitol]
+    Reads the ``_configured_vars`` registry on the global ``env`` singleton and
+    converts each ``EnvVariable`` into a
+    :class:`~django_aqueduct.discovery.ir.SettingField`.
 
     Args:
-        source_module: Override the ``source_module`` label applied to every
-            discovered field.  Defaults to ``"mitol.common.envs"``.
-
-    Example::
-
-        from django_aqueduct.discovery.envparser import EnvParserInspector
-
-        inspector = EnvParserInspector()
-        fields = inspector.discover()
+        source_module: Provenance label applied to every discovered field.
     """
 
     def __init__(self, source_module: str = "mitol.common.envs") -> None:
         """Store the source module label."""
         self._source_module = source_module
 
-    def discover(self) -> list[DiscoveredField]:
-        """Return one field per variable registered with EnvParser.
-
-        Returns:
-            Fields sorted by name for deterministic output.
+    def discover(self) -> list[SettingField]:
+        """Return one :class:`SettingField` per variable in the registry.
 
         Raises:
             ImportError: If ``mitol-django-common`` is not installed.
@@ -101,23 +67,61 @@ class EnvParserInspector:
         env = _load_env_parser()
         configured: dict[str, Any] = env._configured_vars
 
-        fields: list[DiscoveredField] = []
+        fields: list[SettingField] = []
         for name in sorted(configured):
-            env_var = configured[name]
-            result = _annotation_for_var(env_var)
+            fields.append(self._to_field(name, configured[name]))
+        return fields
 
-            fields.append(
-                DiscoveredField(
+    def _to_field(self, name: str, env_var: Any) -> SettingField:
+        prov = Provenance(
+            source_module=self._source_module,
+            method=DiscoveryMethod.ENVPARSER,
+        )
+        aliases = (name,)
+        type_ref = _literal_type(
+            env_var.value if env_var.value is not None else env_var.default
+        )
+
+        if looks_secret(name):
+            if env_var.required:
+                return SettingField(
                     name=name,
-                    type_annotation=result.annotation,
-                    default=env_var.default,
+                    type=type_ref,
+                    default=Default.required(),
+                    env_aliases=aliases,
+                    required=True,
                     description=env_var.description,
-                    required=env_var.required,
-                    source_module=self._source_module,
+                    provenance=prov,
                     dev_only=env_var.dev_only,
-                    needs_refinement=result.needs_refinement,
-                    value_kind=result.value_kind,
                 )
+            return SettingField(
+                name=name,
+                type=type_ref.with_optional(),
+                default=Default.redacted(),
+                env_aliases=aliases,
+                description=env_var.description,
+                provenance=prov,
+                dev_only=env_var.dev_only,
             )
 
-        return fields
+        if env_var.required:
+            default = Default.required()
+            optional = False
+        elif env_var.default is None:
+            default = Default.literal_(None)
+            optional = True
+        else:
+            factory = isinstance(env_var.default, list | dict | set)
+            default = Default.literal_(env_var.default, factory=factory)
+            optional = False
+
+        return SettingField(
+            name=name,
+            type=type_ref.with_optional(optional=optional),
+            default=default,
+            env_aliases=aliases,
+            required=env_var.required,
+            description=env_var.description,
+            provenance=prov,
+            dev_only=env_var.dev_only,
+        )
