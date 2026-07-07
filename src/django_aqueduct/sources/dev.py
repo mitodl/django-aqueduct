@@ -83,23 +83,29 @@ def vault_source_from_env(
         VaultConfigError: When Vault is enabled but misconfigured.
         ImportError: When the ``[vault]`` extra (hvac) is not installed.
     """
-    environ = env if env is not None else dict(os.environ)
+    environ = env if env is not None else os.environ
 
-    vault_addr = environ.get("VAULT_ADDR")
+    def _get(key: str) -> str | None:
+        # Treat empty/whitespace-only env values as unset — e.g. VAULT_ADDR=""
+        # is a common way to disable Vault locally.
+        value = (environ.get(key) or "").strip()
+        return value or None
+
+    vault_addr = _get("VAULT_ADDR")
     if not vault_addr:
         return None
 
-    vault_path = environ.get("VAULT_PATH")
+    vault_path = _get("VAULT_PATH")
     if not vault_path:
         raise VaultConfigError(
             "VAULT_ADDR is set but VAULT_PATH is not; set VAULT_PATH to the KV "
             "secret path (e.g. 'myapp/production')."
         )
 
-    auth_method = _auth_method_from_env(environ.get("VAULT_AUTH_METHOD"))
-    kv_version = _kv_version_from_env(environ.get("VAULT_KV_VERSION"))
-    vault_token = environ.get("VAULT_TOKEN")
-    role = environ.get("VAULT_ROLE")
+    auth_method = _auth_method_from_env(_get("VAULT_AUTH_METHOD"))
+    kv_version = _kv_version_from_env(_get("VAULT_KV_VERSION"))
+    vault_token = _get("VAULT_TOKEN")
+    role = _get("VAULT_ROLE")
 
     if auth_method == "token" and not vault_token:
         raise VaultConfigError(
@@ -116,7 +122,7 @@ def vault_source_from_env(
         settings_cls,
         vault_url=vault_addr,
         vault_path=vault_path,
-        mount_point=environ.get("VAULT_MOUNT", "secret"),
+        mount_point=_get("VAULT_MOUNT") or "secret",
         kv_version=kv_version,
         auth_method=auth_method,
         vault_token=vault_token,

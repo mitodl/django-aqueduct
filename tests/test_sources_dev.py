@@ -57,6 +57,23 @@ def test_invalid_kv_version_raises() -> None:
         )
 
 
+def test_invalid_auth_method_raises() -> None:
+    with pytest.raises(VaultConfigError, match="VAULT_AUTH_METHOD"):
+        vault_source_from_env(
+            _Settings,
+            env={
+                "VAULT_ADDR": "https://v",
+                "VAULT_PATH": "app",
+                "VAULT_AUTH_METHOD": "ldap",
+            },
+        )
+
+
+def test_whitespace_vault_addr_is_unset() -> None:
+    # VAULT_ADDR="   " is a common way to disable Vault locally.
+    assert vault_source_from_env(_Settings, env={"VAULT_ADDR": "   "}) is None
+
+
 def test_valid_config_builds_source() -> None:
     source = vault_source_from_env(
         _Settings,

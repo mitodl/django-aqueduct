@@ -36,10 +36,8 @@ The two rules these encode that the hand-written copies kept getting wrong:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping
+from typing import Any
 
 
 def _require_dj_database_url() -> Any:
@@ -78,6 +76,10 @@ def database_config(
     Returns:
         A single ``DATABASES["default"]``-shaped dict.
     """
+    if not url or not url.strip():
+        # An empty DATABASE_URL yields an empty config rather than a parse
+        # error or a config carrying only a stray sslmode OPTIONS.
+        return {}
     parsed: dict[str, Any] = _require_dj_database_url().parse(
         url, conn_max_age=conn_max_age, **kwargs
     )
@@ -93,11 +95,12 @@ def first_url(*candidates: str | None) -> str | None:
     """Return the first non-empty URL from *candidates*, else ``None``.
 
     Encodes the ``REDIS_URL`` → ``REDISCLOUD_URL`` → broker fallback chain the
-    apps re-implemented by hand.
+    apps re-implemented by hand. Candidates are stripped, and whitespace-only
+    values are treated as unset (a common env-var footgun).
     """
     for candidate in candidates:
-        if candidate:
-            return candidate
+        if candidate and candidate.strip():
+            return candidate.strip()
     return None
 
 
@@ -181,7 +184,7 @@ def feature_flags(
 
 def _as_items(source: Mapping[str, Any] | object) -> Iterable[tuple[str, Any]]:
     """Return ``(name, value)`` pairs from a mapping or settings object."""
-    if isinstance(source, dict):
+    if isinstance(source, Mapping):
         return source.items()
     dump = getattr(source, "model_dump", None)
     if callable(dump):

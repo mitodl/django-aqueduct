@@ -116,3 +116,20 @@ def test_feature_flags_from_model_dump() -> None:
 def test_feature_flags_custom_prefix() -> None:
     flags = dv.feature_flags({"FF_A": 1, "FEATURE_B": 2}, prefix="FF_")
     assert flags == {"A": 1}
+
+
+def test_feature_flags_non_dict_mapping() -> None:
+    # Any Mapping (not just dict) is read via .items(), not attribute lookup.
+    from types import MappingProxyType
+
+    flags = dv.feature_flags(MappingProxyType({"FEATURE_A": True, "X": 1}))
+    assert flags == {"A": True}
+
+
+def test_database_config_empty_url_no_stray_options() -> None:
+    # An empty URL parses to {}; ssl_require must not attach a bogus OPTIONS.
+    assert dv.database_config("", ssl_require=True) == {}
+
+
+def test_first_url_strips_whitespace() -> None:
+    assert dv.first_url("   ", "  redis://h  ") == "redis://h"
