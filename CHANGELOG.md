@@ -5,6 +5,60 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0]
+
+Codegen v2: a ground-up rewrite of settings-model generation and the settings
+lifecycle. The generator no longer imports the target settings module — it
+discovers settings by static AST analysis, so generation is deterministic and
+secret-safe.
+
+### Added
+
+- **Static AST discovery** (`StaticModuleInspector`): reads the settings
+  *source* instead of importing it, recovering env-var aliases, required-ness,
+  inline env reads, conditional branches, and verbatim default expressions that
+  live introspection lost.
+- **Typed IR + pure renderer**: `SettingField`/`TypeRef`/`Default` replace
+  string-annotation and `repr()`-based rendering, eliminating the `NameError`,
+  `"<" in repr`, and single-line-description failure classes. Output is
+  deterministic and groups fields by owning package.
+- **Managed-region regeneration**: generated files carry
+  `# >>> aqueduct:generated/preserved:*` markers; regeneration *merges* into
+  the generated regions and preserves hand-written code. New `--check` drift
+  mode (CI-friendly) and `[tool.aqueduct]` pyproject configuration.
+- **Reusable derivations** (`django_aqueduct.derivations`): `database_config`
+  (SQLite-safe sslmode), `first_url` fallback chain, `redis_cache`,
+  `admins_from_csv`, and `feature_flags` (reads a mapping/model, never
+  `os.environ`, so Vault-sourced flags are seen). New `[derivations]` extra.
+- **Configurable Vault dev base** (`sources.dev`): `vault_source_from_env` /
+  `VaultDevBase` build a Vault source from `VAULT_*` env vars with graceful
+  failure (no more raw `KeyError`).
+- **YAML settings source** (`sources.yaml`, `[yaml]` extra) and hardened
+  Vault/SSM sources: coherent single-fetch caching, JSON-in-Vault decoding for
+  complex fields, `VaultError`/`SSMError` wrapping, and multi-path Vault.
+- **Configurable model strictness** (`--extra` / `[tool.aqueduct] extra`:
+  allow/ignore/forbid) and genson-driven `TypedDict` enrichment for
+  dict-valued settings.
+- **Parity command** (`check_aqueduct_settings`): diffs the model against the
+  legacy settings module and fails on unexplained drift — the migration gate.
+- **Inspector plugin registry** (`django_aqueduct.inspectors` entry points) and
+  a `pre_configure` bootstrap hook on `configure_django_settings` (Sentry
+  before settings) exposing the validated model as `settings.AQUEDUCT_MODEL` /
+  `get_configured_model()`.
+- JSON Schema output and the mitol EnvParser inspector now build on the typed
+  IR; package attribution is reachable from the CLI (`attribution_rules`) with
+  corrected built-in rules.
+- CI test matrix extended to Django 4.2 (the advertised floor) through 6.x.
+
+### Changed
+
+- **Breaking:** the v1 live-import engine is removed. The `--engine` flag is
+  gone and static discovery is the only engine; `generate_aqueduct_settings`
+  no longer imports the settings module. `discovery.module`,
+  `discovery.type_inference`, `discovery.base`, and `codegen.generator` were
+  deleted.
+- `__version__` corrected (was stale at `0.4.0`).
+
 ## [0.6.0]
 
 ### Added
