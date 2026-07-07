@@ -69,8 +69,31 @@ def test_load_failure_wrapped(monkeypatch: pytest.MonkeyPatch) -> None:
         registry.load_inspectors()
 
 
+def test_resolves_inspector_class_by_instantiating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An entry point that loads the inspector *class* (a zero-arg factory) must
+    # be instantiated, not returned as the class — even though the class
+    # structurally satisfies the Inspector protocol.
+    ep = SimpleNamespace(name="p", load=lambda: _Inspector)
+    monkeypatch.setattr(registry, "entry_points", _fake_entry_points(ep))
+    (_, inspector) = registry.load_inspectors()[0]
+    assert not isinstance(inspector, type)
+    assert inspector.discover() == []  # _Inspector() with no names
+
+
+def test_factory_that_raises_is_wrapped(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _bad_factory() -> None:
+        raise ValueError("wrong signature")
+
+    ep = SimpleNamespace(name="p", load=lambda: _bad_factory)
+    monkeypatch.setattr(registry, "entry_points", _fake_entry_points(ep))
+    with pytest.raises(registry.RegistryError, match="factory raised"):
+        registry.load_inspectors()
+
+
 def test_non_inspector_factory_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     ep = SimpleNamespace(name="p", load=lambda: (lambda: object()))
     monkeypatch.setattr(registry, "entry_points", _fake_entry_points(ep))
-    with pytest.raises(registry.RegistryError, match="no discover"):
+    with pytest.raises(registry.RegistryError, match="not an inspector instance"):
         registry.load_inspectors()

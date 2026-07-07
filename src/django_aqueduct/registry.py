@@ -21,7 +21,7 @@ concatenates their discovered fields.
 from __future__ import annotations
 
 from importlib.metadata import entry_points
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
 if TYPE_CHECKING:  # pragma: no cover
     from django_aqueduct.discovery.ir import SettingField
@@ -42,21 +42,37 @@ class RegistryError(Exception):
     """Raised when a registered inspector plugin cannot be loaded."""
 
 
+def _is_inspector_instance(obj: object) -> bool:
+    """Return True when *obj* is an inspector *instance* (not a class).
+
+    A ``runtime_checkable`` Protocol matches a class too (the class carries the
+    ``discover`` method attribute), so guard against types explicitly — a class
+    is a factory to instantiate, not a ready inspector.
+    """
+    return isinstance(obj, Inspector) and not isinstance(obj, type)
+
+
 def _resolve_inspector(loaded: object, name: str) -> Inspector:
     """Coerce a loaded entry-point object into an :class:`Inspector`.
 
     Accepts an inspector instance directly, or a zero-arg factory (class or
-    function) returning one.
+    function) returning one. A factory that raises is wrapped in
+    :class:`RegistryError`.
     """
-    if isinstance(loaded, Inspector):
-        return loaded
+    if _is_inspector_instance(loaded):
+        return cast("Inspector", loaded)
     if callable(loaded):
-        candidate = loaded()
-        if isinstance(candidate, Inspector):
-            return candidate
+        try:
+            candidate = loaded()
+        except Exception as exc:  # noqa: BLE001
+            raise RegistryError(
+                f"Inspector plugin {name!r} factory raised: {exc}"
+            ) from exc
+        if _is_inspector_instance(candidate):
+            return cast("Inspector", candidate)
         raise RegistryError(
             f"Inspector plugin {name!r} factory returned "
-            f"{type(candidate).__name__}, which has no discover() method."
+            f"{type(candidate).__name__}, which is not an inspector instance."
         )
     raise RegistryError(
         f"Inspector plugin {name!r} is neither an inspector nor a factory."
