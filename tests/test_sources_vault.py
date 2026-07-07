@@ -236,3 +236,83 @@ class TestImportGuard:
         with patch.dict(sys.modules, {"hvac": None}):  # type: ignore[dict-item]
             with pytest.raises(ImportError, match="django-aqueduct\\[vault\\]"):
                 source()
+
+
+# ------------------------------------------------------------------ #
+# Hardening: caching, complex values, multi-path, error wrapping      #
+# ------------------------------------------------------------------ #
+
+from pydantic_settings import BaseSettings, SettingsConfigDict  # noqa: E402
+
+from django_aqueduct.sources.vault import VaultError  # noqa: E402
+
+
+class _Settings(BaseSettings):
+    model_config = SettingsConfigDict(extra="allow")
+    DB_PASSWORD: str = ""
+    JWT_AUTH: dict = {}
+
+
+def _real_source(**kwargs: Any) -> VaultSettingsSource:
+    return VaultSettingsSource(
+        _Settings,
+        vault_url="https://vault.example.com",
+        vault_path="myapp/production",
+        vault_token="t",
+        **kwargs,
+    )
+
+
+def test_secrets_fetched_once_and_cached() -> None:
+    client = _make_hvac_client({"DB_PASSWORD": "x"})
+    src = _real_source()
+    with patch("hvac.Client", return_value=client):
+        src()
+        src()  # second call must not re-read Vault
+        src.get_field_value(_Settings.model_fields["DB_PASSWORD"], "DB_PASSWORD")
+    assert client.secrets.kv.v2.read_secret_version.call_count == 1
+
+
+def test_json_string_decoded_for_complex_field() -> None:
+    # JWT_AUTH is a dict field; its Vault value is a JSON string.
+    client = _make_hvac_client({"JWT_AUTH": '{"ALGORITHM": "HS256"}'})
+    src = _real_source()
+    with patch("hvac.Client", return_value=client):
+        data = src()
+    assert data["JWT_AUTH"] == {"ALGORITHM": "HS256"}
+
+
+def test_extra_keys_pass_through() -> None:
+    client = _make_hvac_client({"UNDECLARED": "keepme"})
+    src = _real_source()
+    with patch("hvac.Client", return_value=client):
+        data = src()
+    assert data["UNDECLARED"] == "keepme"
+
+
+def test_multi_path_merge_later_wins() -> None:
+    client = MagicMock()
+    client.secrets.kv.v2.read_secret_version.side_effect = [
+        {"data": {"data": {"A": "1", "B": "base"}}},
+        {"data": {"data": {"B": "override", "C": "3"}}},
+    ]
+    src = VaultSettingsSource(
+        _Settings,
+        vault_url="https://v",
+        vault_path=["base/path", "env/path"],
+        vault_token="t",
+    )
+    with patch("hvac.Client", return_value=client):
+        data = src()
+    assert data["A"] == "1"
+    assert data["B"] == "override"  # later path wins
+    assert data["C"] == "3"
+
+
+def test_read_failure_wrapped_in_vault_error() -> None:
+    client = MagicMock()
+    client.secrets.kv.v2.read_secret_version.side_effect = RuntimeError("boom")
+    src = _real_source()
+    with patch("hvac.Client", return_value=client):
+        with pytest.raises(VaultError, match="Failed to read secrets"):
+            src()

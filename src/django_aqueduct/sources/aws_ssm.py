@@ -31,6 +31,12 @@ from typing import Any
 
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 
+from django_aqueduct.sources._base import SourceError, build_from_mapping
+
+
+class SSMError(SourceError):
+    """Raised when reading parameters from AWS SSM fails."""
+
 
 def _require_boto3() -> Any:
     """Import boto3 or raise a helpful error.
@@ -82,6 +88,7 @@ class AWSParameterStoreSource(PydanticBaseSettingsSource):
         super().__init__(settings_cls)
         self._path_prefix = path_prefix
         self._region_name = region_name
+        self._params_cache: dict[str, Any] | None = None
 
     def _fetch_all(self) -> dict[str, Any]:
         """Fetch every parameter under the prefix, following pagination tokens.
@@ -90,48 +97,51 @@ class AWSParameterStoreSource(PydanticBaseSettingsSource):
             Merged dict of stripped-name → value for all pages.
 
         Raises:
+            SSMError: On an AWS client/read failure.
             ImportError: If ``boto3`` is not installed.
         """
         boto3 = _require_boto3()
-        kwargs: dict[str, Any] = {}
-        if self._region_name:
-            kwargs["region_name"] = self._region_name
-        client = boto3.client("ssm", **kwargs)
+        try:
+            kwargs: dict[str, Any] = {}
+            if self._region_name:
+                kwargs["region_name"] = self._region_name
+            client = boto3.client("ssm", **kwargs)
 
-        results: dict[str, Any] = {}
-        paginate_kwargs: dict[str, Any] = {
-            "Path": self._path_prefix,
-            "Recursive": True,
-            "WithDecryption": True,
-        }
+            results: dict[str, Any] = {}
+            paginate_kwargs: dict[str, Any] = {
+                "Path": self._path_prefix,
+                "Recursive": True,
+                "WithDecryption": True,
+            }
 
-        while True:
-            response = client.get_parameters_by_path(**paginate_kwargs)
-            for param in response.get("Parameters", []):
-                key = param["Name"].removeprefix(self._path_prefix)
-                results[key] = param["Value"]
+            while True:
+                response = client.get_parameters_by_path(**paginate_kwargs)
+                for param in response.get("Parameters", []):
+                    key = param["Name"].removeprefix(self._path_prefix)
+                    results[key] = param["Value"]
 
-            next_token = response.get("NextToken")
-            if not next_token:
-                break
-            paginate_kwargs["NextToken"] = next_token
+                next_token = response.get("NextToken")
+                if not next_token:
+                    break
+                paginate_kwargs["NextToken"] = next_token
+        except Exception as exc:  # noqa: BLE001
+            raise SSMError(
+                f"Failed to read SSM parameters under {self._path_prefix!r}: {exc}"
+            ) from exc
 
         return results
 
+    @property
+    def _params(self) -> dict[str, Any]:
+        """Fetch (once) and cache the parameters under the prefix."""
+        if self._params_cache is None:
+            self._params_cache = self._fetch_all()
+        return self._params_cache
+
     def __call__(self) -> dict[str, Any]:
-        """Return all parameters under the prefix as a flat dict.
-
-        Returns:
-            Settings dict with path prefix stripped from keys.
-
-        Raises:
-            ImportError: If ``boto3`` is not installed.
-        """
-        return self._fetch_all()
+        """Return the parameters as a validated settings dict (complex-aware)."""
+        return build_from_mapping(self, self._params)
 
     def get_field_value(self, field: Any, field_name: str) -> tuple[Any, str, bool]:
         """Look up *field_name* from the cached SSM parameters dict."""
-        if not hasattr(self, "_cache"):
-            self._cache: dict[str, Any] = self._fetch_all()
-        value = self._cache.get(field_name)
-        return value, field_name, False
+        return self._params.get(field_name), field_name, self.field_is_complex(field)
