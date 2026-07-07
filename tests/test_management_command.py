@@ -315,3 +315,20 @@ def test_check_stdout_is_rejected() -> None:
         call_command(
             "generate_aqueduct_settings", modules="v2_fixture_settings", check=True
         )
+
+
+def test_pyproject_output_config_is_used(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[tool.aqueduct] output is honored when --output is omitted (regression)."""
+    from django_aqueduct import config as config_mod
+
+    out = tmp_path / "from_config.py"
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda *a, **k: config_mod.AqueductConfig(output=str(out)),
+    )
+    call_command("generate_aqueduct_settings", modules="v2_fixture_settings")
+    assert out.is_file()
+    assert "class AqueductSettings(BaseSettings):" in out.read_text()

@@ -86,7 +86,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--format",
             choices=["python", "jsonschema"],
-            default="python",
+            default=None,
             help=(
                 "Output format. 'python' (default) emits a Pydantic "
                 "BaseSettings model. 'jsonschema' emits a JSON Schema document "
@@ -106,7 +106,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--output",
             type=str,
-            default="-",
+            default=None,
             help="Output file path. Use '-' (the default) to write to stdout.",
         )
         parser.add_argument(

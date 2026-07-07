@@ -62,6 +62,29 @@ def test_merge_errors_when_region_marker_missing() -> None:
         merge(broken, regenerated)
 
 
+def test_merge_errors_on_obsolete_region() -> None:
+    # existing file has a generated region the generator no longer produces
+    existing = _doc("    A: int = 1").replace(
+        "# <<< aqueduct:generated:fields\n",
+        "# <<< aqueduct:generated:fields\n"
+        "    # >>> aqueduct:generated:stale\n"
+        "    OLD = 1\n"
+        "    # <<< aqueduct:generated:stale\n",
+    )
+    regenerated = _doc("    A: int = 1")
+    with pytest.raises(RegionError, match="no longer produced"):
+        merge(existing, regenerated)
+
+
+def test_duplicate_marker_raises() -> None:
+    text = (
+        "# >>> aqueduct:generated:fields\nA = 1\n# <<< aqueduct:generated:fields\n"
+        "# >>> aqueduct:generated:fields\nB = 2\n# <<< aqueduct:generated:fields\n"
+    )
+    with pytest.raises(RegionError, match="Duplicate"):
+        generated_regions(text)
+
+
 def test_unbalanced_marker_raises() -> None:
     text = "# >>> aqueduct:generated:fields\nA = 1\n"  # never closed
     with pytest.raises(RegionError, match="Unclosed"):

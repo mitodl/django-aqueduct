@@ -43,12 +43,19 @@ def _iter_marked_regions(text: str) -> Iterator[tuple[str, str, int, int]]:
     """
     lines = text.splitlines()
     open_stack: list[tuple[str, str, int]] = []
+    seen: set[tuple[str, str]] = set()
     for idx, line in enumerate(lines):
         m = _MARKER_RE.match(line)
         if m is None:
             continue
         kind, rid, direction = m["kind"], m["id"], m["dir"]
         if direction == ">>>":
+            if (kind, rid) in seen:
+                raise RegionError(
+                    f"Duplicate region aqueduct:{kind}:{rid} "
+                    f"(reopened at line {idx + 1})."
+                )
+            seen.add((kind, rid))
             open_stack.append((kind, rid, idx))
         else:  # <<<
             if not open_stack:
@@ -104,6 +111,18 @@ def merge(existing: str, generated: str) -> str:
             "Generated region(s) missing from the target file: "
             + ", ".join(f"aqueduct:generated:{r}" for r in sorted(missing))
             + ". Re-add the markers or regenerate from scratch (--reset)."
+        )
+
+    # A generated region on disk that the generator no longer produces is stale
+    # content we would otherwise leave behind untouched. Surface it rather than
+    # silently keeping it (consistent with the missing-region check above).
+    obsolete = set(spans) - set(new_bodies)
+    if obsolete:
+        raise RegionError(
+            "Target file has generated region(s) no longer produced by the "
+            "generator: "
+            + ", ".join(f"aqueduct:generated:{r}" for r in sorted(obsolete))
+            + ". Remove the markers or regenerate from scratch (--reset)."
         )
 
     # Rebuild line-by-line, swapping each generated region body.
