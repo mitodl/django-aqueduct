@@ -38,6 +38,7 @@ so generation is reproducible::
     modules = ["myapp.settings.base", "myapp.settings.production"]
     output = "src/myapp/settings_model.py"
     include_envparser = true
+    extra = "forbid"          # reject un-modeled keys (typo detection)
 """
 
 from __future__ import annotations
@@ -136,6 +137,16 @@ class Command(BaseCommand):
             help="Name of the generated BaseSettings subclass.",
         )
         parser.add_argument(
+            "--extra",
+            choices=["allow", "ignore", "forbid"],
+            default=None,
+            help=(
+                "Pydantic model 'extra' policy for un-modeled keys: 'allow' "
+                "(keep), 'ignore' (drop), or 'forbid' (reject — enables typo "
+                "detection)."
+            ),
+        )
+        parser.add_argument(
             "--check",
             action="store_true",
             default=False,
@@ -173,6 +184,7 @@ class Command(BaseCommand):
         output_path = str(options.get("output") or cfg.output or "-")
         output_format = str(options.get("format") or cfg.output_format or "python")
         class_name = str(options.get("class_name") or cfg.class_name)
+        extra = str(options.get("extra") or cfg.extra)
         check = bool(options.get("check"))
         reset = bool(options.get("reset"))
 
@@ -228,7 +240,7 @@ class Command(BaseCommand):
 
             output = json.dumps(SchemaGenerator(fields).generate(), indent=2)
         else:
-            output = ModelRenderer(fields, class_name=class_name).render()
+            output = ModelRenderer(fields, class_name=class_name, extra=extra).render()
 
         if check:
             self._check(output, output_path, output_format)

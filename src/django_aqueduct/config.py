@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 _VALID_FORMATS = ("python", "jsonschema")
+_VALID_EXTRA = ("allow", "ignore", "forbid")
 
 
 class ConfigError(Exception):
@@ -35,6 +36,7 @@ class AqueductConfig:
     attribute_packages: bool = False
     class_name: str = "AqueductSettings"
     output_format: str = "python"
+    extra: str = "allow"
 
 
 def find_pyproject(start: Path | None = None) -> Path | None:
@@ -84,4 +86,12 @@ def load_config(start: Path | None = None) -> AqueductConfig:
                 f"expected one of {', '.join(_VALID_FORMATS)}."
             )
         cfg.output_format = fmt
+    if "extra" in table:
+        extra = table["extra"]
+        if extra not in _VALID_EXTRA:
+            raise ConfigError(
+                f"[tool.aqueduct] extra={extra!r} is invalid; "
+                f"expected one of {', '.join(_VALID_EXTRA)}."
+            )
+        cfg.extra = extra
     return cfg

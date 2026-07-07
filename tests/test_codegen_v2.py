@@ -215,6 +215,52 @@ def test_single_module_has_no_group_header(fields):
     assert "# =====" not in src
 
 
+def test_extra_strictness_configurable():
+    import ast as _ast
+
+    for policy in ("allow", "ignore", "forbid"):
+        src = ModelRenderer(
+            [
+                SettingField(
+                    name="DEBUG",
+                    type=TypeRef("bool"),
+                    default=Default.literal_(False),
+                    provenance=Provenance(source_module="m"),
+                )
+            ],
+            extra=policy,
+        ).render()
+        _ast.parse(src)
+        assert f'extra="{policy}"' in src
+
+
+def test_invalid_extra_rejected():
+    with pytest.raises(ValueError, match="extra must be"):
+        ModelRenderer([], extra="bogus")
+
+
+def test_dict_setting_enriched_to_typeddict():
+    f = SettingField(
+        name="DATABASES",
+        type=TypeRef("dict[str, Any]"),
+        default=Default.literal_(
+            {"default": {"ENGINE": "x", "NAME": "db"}}, factory=True
+        ),
+        provenance=Provenance(source_module="m"),
+    )
+    src = ModelRenderer([f]).render()
+    assert "class DatabasesEntry(TypedDict, total=False):" in src
+    assert "DATABASES: dict[str, DatabasesEntry]" in src
+    assert "# >>> aqueduct:generated:typeddicts" in src
+    ast.parse(src)
+
+
+def test_no_typeddicts_when_no_enrichable_dicts(fields):
+    # The fixture has no homogeneous-struct dicts → no typeddict region.
+    src = ModelRenderer(fields).render()
+    assert "aqueduct:generated:typeddicts" not in src
+
+
 def test_render_parses(fields):
     src = ModelRenderer(fields).render()
     ast.parse(src)  # must be valid Python

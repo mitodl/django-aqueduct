@@ -332,3 +332,11 @@ def test_pyproject_output_config_is_used(
     call_command("generate_aqueduct_settings", modules="v2_fixture_settings")
     assert out.is_file()
     assert "class AqueductSettings(BaseSettings):" in out.read_text()
+
+
+def test_extra_flag(capsys: _Capsys) -> None:
+    """--extra sets the model_config extra policy."""
+    call_command(
+        "generate_aqueduct_settings", modules="v2_fixture_settings", extra="forbid"
+    )
+    assert 'extra="forbid"' in capsys.readouterr().out

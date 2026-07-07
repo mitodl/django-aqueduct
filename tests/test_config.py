@@ -70,3 +70,14 @@ def test_find_pyproject_walks_up(tmp_path: Path) -> None:
     nested.mkdir(parents=True)
     found = find_pyproject(nested)
     assert found == tmp_path / "pyproject.toml"
+
+
+def test_extra_config_loaded(tmp_path: Path) -> None:
+    root = _write_pyproject(tmp_path, "[tool.aqueduct]\nextra = 'forbid'\n")
+    assert load_config(root).extra == "forbid"
+
+
+def test_invalid_extra_raises(tmp_path: Path) -> None:
+    root = _write_pyproject(tmp_path, "[tool.aqueduct]\nextra = 'nope'\n")
+    with pytest.raises(ConfigError, match="extra='nope' is invalid"):
+        load_config(root)
