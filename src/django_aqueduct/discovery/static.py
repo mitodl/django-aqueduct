@@ -1,9 +1,8 @@
 """Static AST discovery for codegen v2.
 
-The v1 :class:`~django_aqueduct.discovery.module.ModuleInspector` imports the
-settings module and records *resolved runtime values*, which bakes
+Importing a settings module and recording its *resolved runtime values* bakes
 generation-machine state into defaults, freezes conditional branches, erases
-required-ness, and loses env-var aliases (see the codegen v2 RFC).
+required-ness, and loses env-var aliases.
 
 This inspector reads the settings *source* instead. It parses the module with
 :mod:`ast` and, for each module-level ``UPPERCASE = <expr>`` assignment,
@@ -40,7 +39,7 @@ from django_aqueduct.discovery.ir import (
     SettingField,
     TypeRef,
 )
-from django_aqueduct.discovery.module import _looks_secret
+from django_aqueduct.discovery.secrets import looks_secret
 
 # Names that are always available in generated code without an import.
 _BUILTIN_NAMES: frozenset[str] = frozenset(dir(builtins))
@@ -465,7 +464,7 @@ class StaticModuleInspector:
         # Redaction takes precedence: never emit an observed/secret value. A
         # required secret still renders REQUIRED (enforced, no value written);
         # otherwise it is optional-None.
-        if _looks_secret(name):
+        if looks_secret(name):
             type_ref = (
                 reader.type_ref if reader else TypeRef("str", needs_refinement=True)
             )

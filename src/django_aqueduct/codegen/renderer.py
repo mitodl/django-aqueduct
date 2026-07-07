@@ -1,8 +1,8 @@
 """Pure IR → source renderer for codegen v2.
 
-Unlike v1's :mod:`django_aqueduct.codegen.generator`, this renderer never
-imports the target module, never ``repr()``s a live object, and never does
-string surgery on type annotations. It is a pure function of
+This renderer never imports the target module, never ``repr()``s a live
+object, and never does string surgery on type annotations. It is a pure
+function of
 :class:`~django_aqueduct.discovery.ir.SettingField` IR, which makes golden-file
 and determinism tests trivial.
 

@@ -34,40 +34,26 @@ def test_contains_fixture_field_names(capsys: pytest.CaptureFixture[str]) -> Non
         assert name in captured.out, f"Expected {name} in output"
 
 
-def test_v2_engine_outputs_valid_python(capsys: pytest.CaptureFixture[str]) -> None:
-    """--engine v2 runs static discovery and produces parseable, managed output."""
-    call_command(
-        "generate_aqueduct_settings",
-        engine="v2",
-        modules="v2_fixture_settings",
-    )
+def test_static_discovery_recovers_aliases_and_required(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Static discovery yields parseable managed output with aliases/required."""
+    call_command("generate_aqueduct_settings", modules="v2_fixture_settings")
     out = capsys.readouterr().out
     ast.parse(out)
     assert "class AqueductSettings(BaseSettings):" in out
     assert "# >>> aqueduct:generated:fields" in out
-    # Env alias + required-ness recovered from source (v1 lost these).
+    # Env alias + required-ness recovered from source (the old engine lost these).
     assert "validation_alias=AliasChoices('APP_BASE_URL')" in out
     assert "APP_BASE_URL: str = Field(..." in out
 
 
-def test_v2_engine_rejects_jsonschema() -> None:
-    """--engine v2 with --format jsonschema is an explicit error, not silent."""
-    from django.core.management.base import CommandError
-
-    with pytest.raises(CommandError):
-        call_command(
-            "generate_aqueduct_settings",
-            engine="v2",
-            format="jsonschema",
-            modules="v2_fixture_settings",
-        )
-
-
-def test_contains_section_header(capsys: pytest.CaptureFixture[str]) -> None:
-    """Source module section header is present."""
+def test_single_module_has_no_group_header(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """One source module with no attribution renders a clean unlabelled block."""
     call_command("generate_aqueduct_settings", modules="fixture_settings")
-    captured = capsys.readouterr()
-    assert "# ===== fixture_settings =====" in captured.out
+    assert "# =====" not in capsys.readouterr().out
 
 
 def test_write_to_file(
@@ -121,7 +107,7 @@ def test_path_default_renders_as_pathlib(capsys: _Capsys) -> None:
     call_command("generate_aqueduct_settings", modules="fixture_settings")
     captured = capsys.readouterr()
     assert "import pathlib" in captured.out
-    assert "pathlib.Path('/var/data')" in captured.out
+    assert 'pathlib.Path("/var/data")' in captured.out
 
 
 # ------------------------------------------------------------------ #

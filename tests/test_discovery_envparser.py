@@ -86,8 +86,8 @@ def test_str_mapping(mock_env):
     from django_aqueduct.discovery.envparser import EnvParserInspector  # noqa: PLC0415
 
     fields = {f.name: f for f in EnvParserInspector().discover()}
-    assert fields["STR_SETTING"].type_annotation == "str"
-    assert fields["STR_SETTING"].needs_refinement is False
+    assert fields["STR_SETTING"].type.base == "str"
+    assert fields["STR_SETTING"].type.needs_refinement is False
 
 
 def test_bool_mapping(mock_env):
@@ -95,7 +95,7 @@ def test_bool_mapping(mock_env):
     from django_aqueduct.discovery.envparser import EnvParserInspector  # noqa: PLC0415
 
     fields = {f.name: f for f in EnvParserInspector().discover()}
-    assert fields["BOOL_SETTING"].type_annotation == "bool"
+    assert fields["BOOL_SETTING"].type.base == "bool"
 
 
 def test_int_mapping(mock_env):
@@ -103,7 +103,7 @@ def test_int_mapping(mock_env):
     from django_aqueduct.discovery.envparser import EnvParserInspector  # noqa: PLC0415
 
     fields = {f.name: f for f in EnvParserInspector().discover()}
-    assert fields["INT_SETTING"].type_annotation == "int"
+    assert fields["INT_SETTING"].type.base == "int"
 
 
 def test_list_mapping(mock_env):
@@ -111,7 +111,7 @@ def test_list_mapping(mock_env):
     from django_aqueduct.discovery.envparser import EnvParserInspector  # noqa: PLC0415
 
     fields = {f.name: f for f in EnvParserInspector().discover()}
-    assert fields["LIST_SETTING"].type_annotation == "list[Any]"
+    assert fields["LIST_SETTING"].type.base == "list[Any]"
 
 
 def test_dict_mapping(mock_env):
@@ -119,7 +119,7 @@ def test_dict_mapping(mock_env):
     from django_aqueduct.discovery.envparser import EnvParserInspector  # noqa: PLC0415
 
     fields = {f.name: f for f in EnvParserInspector().discover()}
-    assert fields["DICT_SETTING"].type_annotation == "dict[str, Any]"
+    assert fields["DICT_SETTING"].type.base == "dict[str, Any]"
 
 
 def test_required_flag_propagated(mock_env):
@@ -144,7 +144,7 @@ def test_none_value_needs_refinement(mock_env):
     from django_aqueduct.discovery.envparser import EnvParserInspector  # noqa: PLC0415
 
     fields = {f.name: f for f in EnvParserInspector().discover()}
-    assert fields["NONE_DEFAULT"].needs_refinement is True
+    assert fields["NONE_DEFAULT"].type.needs_refinement is True
 
 
 def test_sorted_output(mock_env):
@@ -171,4 +171,4 @@ def test_custom_source_module(mock_env):
 
     fields = EnvParserInspector(source_module="myapp.settings").discover()
     for f in fields:
-        assert f.source_module == "myapp.settings"
+        assert f.provenance.source_module == "myapp.settings"

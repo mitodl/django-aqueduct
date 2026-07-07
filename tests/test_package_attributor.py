@@ -8,7 +8,13 @@ from unittest.mock import patch
 
 import pytest
 
-from django_aqueduct.discovery.base import DiscoveredField, ValueKind
+from django_aqueduct.discovery.ir import (
+    Default,
+    ImportSpec,
+    Provenance,
+    SettingField,
+    TypeRef,
+)
 from django_aqueduct.discovery.package_attributor import (
     LABEL_DJANGO,
     LABEL_PROJECT,
@@ -29,18 +35,13 @@ from django_aqueduct.discovery.package_attributor import (
 def _make_field(
     name: str,
     default: Any = "value",
-    value_kind: ValueKind = ValueKind.STATIC,
     source_module: str = "myapp.settings",
-) -> DiscoveredField:
-    return DiscoveredField(
+) -> SettingField:
+    return SettingField(
         name=name,
-        type_annotation="str",
-        default=default,
-        description="",
-        required=False,
-        source_module=source_module,
-        dev_only=False,
-        value_kind=value_kind,
+        type=TypeRef("str"),
+        default=Default.literal_(default),
+        provenance=Provenance(source_module=source_module),
     )
 
 
@@ -295,55 +296,43 @@ class TestPackageAttributor:
         result = attributor.attribute([_make_field("MY_SPECIAL_SETTING")])
         assert result["MY_SPECIAL_SETTING"] == "my-internal-package"
 
-    def test_callable_inspection_returns_package_for_third_party_fn(
-        self, mocker: Any
-    ) -> None:
-        """Function-valued settings are attributed via inspect.getmodule."""
-        import types
+    def test_imported_reference_attributed_to_source_package(self, mocker: Any) -> None:
+        """A setting whose EXPR value is imported from a package is attributed to it.
 
-        fake_mod = types.ModuleType("rest_framework.views")
-        fake_fn = lambda: None  # noqa: E731
-        fake_fn.__module__ = "rest_framework.views"  # type: ignore[attr-defined]
-
-        def _fake_dist_label(m: str) -> str | None:
-            return "djangorestframework" if "rest_framework" in m else None
-
+        The static replacement for v1's live inspect.getmodule() strategy:
+        ``HANDLER = rest_framework.views.something`` is captured as an EXPR
+        default carrying ``from rest_framework import views``.
+        """
         mocker.patch(
             "django_aqueduct.discovery.package_attributor._module_to_dist_label",
-            side_effect=_fake_dist_label,
+            side_effect=lambda m: (
+                "djangorestframework" if "rest_framework" in m else None
+            ),
         )
-        mocker.patch(
-            "django_aqueduct.discovery.package_attributor.inspect.getmodule",
-            return_value=fake_mod,
+        field = SettingField(
+            name="MY_HANDLER",
+            type=TypeRef("Any"),
+            default=Default.expr_(
+                "rest_framework.views.something",
+                frozenset({ImportSpec("rest_framework", "views")}),
+            ),
+            provenance=Provenance(source_module="myapp.settings"),
         )
-        fake_mod.__name__ = "rest_framework.views"
-
-        attributor = self._attributor()
-        field = _make_field(
-            "MY_HANDLER",
-            default=fake_fn,
-            value_kind=ValueKind.CALLABLE,
-        )
-        result = attributor.attribute([field])
+        result = self._attributor().attribute([field])
         assert result["MY_HANDLER"] == "djangorestframework"
 
-    def test_callable_inspection_project_code_falls_through_to_static(
-        self,
-    ) -> None:
-        """Callables defined in project code are not attributed via inspect."""
-
-        def _project_fn() -> None:
-            pass
-
-        # _project_fn is defined in this test module which is not in _DIST_MAP
-        attributor = self._attributor()
-        field = _make_field(
-            "WIKI_CAN_EDIT",
-            default=_project_fn,
-            value_kind=ValueKind.CALLABLE,
+    def test_imported_reference_from_project_code_falls_through(self) -> None:
+        """An EXPR import that maps to no distribution falls back to project."""
+        field = SettingField(
+            name="WIKI_CAN_EDIT",
+            type=TypeRef("Any"),
+            default=Default.expr_(
+                "myproject.perms.can_edit",
+                frozenset({ImportSpec("myproject", "perms")}),
+            ),
+            provenance=Provenance(source_module="myapp.settings"),
         )
-        result = attributor.attribute([field])
-        # Falls back to LABEL_PROJECT since static rules don't match WIKI_CAN_*
+        result = self._attributor().attribute([field])
         assert result["WIKI_CAN_EDIT"] == LABEL_PROJECT
 
     def test_dynamic_map_cached(self, mocker: Any) -> None:
@@ -406,116 +395,3 @@ class TestPackageAttributor:
         result = attributor.attribute([_make_field("CSRF_COOKIE_SECURE")])
         # Extra rules rank below the dynamic map; Django core wins
         assert result["CSRF_COOKIE_SECURE"] == LABEL_DJANGO
-
-
-# ---------------------------------------------------------------------------
-# Integration: generator groups by owning_package
-# ---------------------------------------------------------------------------
-
-
-def test_generator_groups_by_owning_package() -> None:
-    """When owning_package is set, the generator uses it for section headers."""
-    from django_aqueduct.codegen.generator import SettingsModelGenerator
-
-    fields = [
-        DiscoveredField(
-            name="DATABASES",
-            type_annotation="dict[str, Any]",
-            default={},
-            description="",
-            required=False,
-            source_module="myapp.settings",
-            dev_only=False,
-            owning_package="django",
-        ),
-        DiscoveredField(
-            name="REST_FRAMEWORK",
-            type_annotation="dict[str, Any]",
-            default={},
-            description="",
-            required=False,
-            source_module="myapp.settings",
-            dev_only=False,
-            owning_package="djangorestframework",
-        ),
-        DiscoveredField(
-            name="MY_CUSTOM_SETTING",
-            type_annotation="str",
-            default="val",
-            description="",
-            required=False,
-            source_module="myapp.settings",
-            dev_only=False,
-            owning_package="project",
-        ),
-    ]
-    output = SettingsModelGenerator(fields).render()
-    assert "# ===== django =====" in output
-    assert "# ===== djangorestframework =====" in output
-    assert "# ===== project =====" in output
-    # django section should appear before djangorestframework
-    assert output.index("# ===== django =====") < output.index(
-        "# ===== djangorestframework ====="
-    )
-    # project section should appear last
-    assert output.index("# ===== project =====") > output.index(
-        "# ===== djangorestframework ====="
-    )
-
-
-def test_generator_falls_back_to_source_module_without_attribution() -> None:
-    """Without attribution, the generator groups by source_module as before."""
-    from django_aqueduct.codegen.generator import SettingsModelGenerator
-
-    fields = [
-        DiscoveredField(
-            name="DEBUG",
-            type_annotation="bool",
-            default=False,
-            description="",
-            required=False,
-            source_module="myapp.settings",
-            dev_only=False,
-        ),
-    ]
-    output = SettingsModelGenerator(fields).render()
-    assert "# ===== myapp.settings =====" in output
-
-
-# ---------------------------------------------------------------------------
-# Integration: JSON Schema includes x-aqueduct-package
-# ---------------------------------------------------------------------------
-
-
-def test_schema_generator_includes_package_extension() -> None:
-    """x-aqueduct-package appears in the JSON Schema when owning_package is set."""
-    import json
-
-    from django_aqueduct.codegen.schema_generator import SchemaGenerator
-
-    fields = [
-        DiscoveredField(
-            name="DATABASES",
-            type_annotation="dict[str, Any]",
-            default=None,
-            description="",
-            required=False,
-            source_module="myapp.settings",
-            dev_only=False,
-            owning_package="django",
-        ),
-        DiscoveredField(
-            name="MY_CUSTOM",
-            type_annotation="str",
-            default="x",
-            description="",
-            required=False,
-            source_module="myapp.settings",
-            dev_only=False,
-            owning_package="",
-        ),
-    ]
-    schema = SchemaGenerator(fields).generate()
-    json.dumps(schema)  # Must be JSON-serialisable
-    assert schema["properties"]["DATABASES"]["x-aqueduct-package"] == "django"
-    assert "x-aqueduct-package" not in schema["properties"]["MY_CUSTOM"]

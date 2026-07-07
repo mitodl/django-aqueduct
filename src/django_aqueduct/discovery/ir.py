@@ -1,10 +1,9 @@
 """Typed intermediate representation (IR) for codegen v2.
 
-The v1 pipeline carried settings as a string ``type_annotation`` and a live
-``default`` object (:mod:`django_aqueduct.discovery.base`), forcing every
-downstream step to do string surgery on types and ``repr()`` on runtime
-objects. That produced the ``NameError``/``"<" in repr``/optional-widening
-failure classes documented in the codegen v2 RFC.
+Carrying settings as a string ``type_annotation`` plus a live ``default``
+object forces every downstream step to do string surgery on types and
+``repr()`` on runtime objects, producing the ``NameError`` / ``"<" in repr`` /
+optional-widening failure classes.
 
 This module replaces that with an explicit, renderer-agnostic IR:
 

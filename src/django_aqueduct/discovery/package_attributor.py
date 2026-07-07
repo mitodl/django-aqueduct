@@ -6,11 +6,13 @@ complementary strategies, applied in priority order:
 1. **Django core** — ``django.conf.global_settings`` is imported directly;
    every UPPERCASE name it defines is attributed to ``"django"``.
 
-2. **Callable value inspection** — for settings whose default value is a
-   function, method, or class, ``inspect.getmodule()`` returns the actual
-   defining module.  The module's top-level package is then mapped to its
-   PyPI distribution name via ``importlib.metadata``.  This correctly
-   attributes function-valued settings such as ``WIKI_CAN_ASSIGN``.
+2. **Imported-reference attribution** — a setting whose value is a reference
+   pulled from a package (a callable, class, or constant, e.g.
+   ``WIKI_CAN_ASSIGN = wiki.core.perms.can_assign``) is captured by static
+   discovery as an ``EXPR`` default carrying that import; the setting is
+   attributed to the package the reference comes from, via the expression's
+   imports mapped to their PyPI distribution names. This is the static
+   replacement for reflecting a *live* callable's module.
 
 3. **Known package APIs** — packages that expose their settings as structured
    Python objects are queried directly:
@@ -47,13 +49,12 @@ from __future__ import annotations
 
 import ast
 import importlib
-import inspect
 import os
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from django_aqueduct.discovery.base import DiscoveredField  # pragma: no cover
+    from django_aqueduct.discovery.ir import SettingField  # pragma: no cover
 
 # ---------------------------------------------------------------------------
 # Public sentinel labels
@@ -485,7 +486,7 @@ class PackageAttributor:
     # Internal: attribute a single field
     # ------------------------------------------------------------------
 
-    def _attribute_one(self, f: DiscoveredField) -> str:
+    def _attribute_one(self, f: SettingField) -> str:
         """Return the package label for a single field.
 
         Args:
@@ -496,20 +497,22 @@ class PackageAttributor:
         """
         assert self._dynamic_map is not None  # noqa: S101
 
-        # Strategy 1 / 3 / 4 — dynamic map
+        # Django core / Celery / DRF / AST-scan dynamic map
         if f.name in self._dynamic_map:
             return self._dynamic_map[f.name]
 
-        # Strategy 2 — callable value inspection
-        default: Any = f.default
-        if inspect.isfunction(default) or inspect.ismethod(default):
-            mod = inspect.getmodule(default)
-            if mod is not None:
-                label = _module_to_dist_label(mod.__name__)
-                if label is not None:
-                    return label
+        # Imported-reference attribution — the static replacement for v1's
+        # live ``inspect.getmodule()`` strategy. A setting whose value is a
+        # reference pulled from a package (a callable, class, or constant, e.g.
+        # ``WIKI_CAN_ASSIGN = wiki.core.perms.can_assign``) is captured as an
+        # EXPR default carrying that import; attribute the setting to the
+        # package the reference comes from. Sorted for deterministic output.
+        for spec in sorted(f.default.expr_imports, key=lambda s: s.sort_key()):
+            label = _module_to_dist_label(spec.module)
+            if label is not None:
+                return label
 
-        # Strategy 6 — user-provided rules
+        # User-provided rules
         for pattern, label in self._extra_rules:
             if _matches_rule(f.name, pattern):
                 return label
@@ -526,7 +529,7 @@ class PackageAttributor:
     # Public API
     # ------------------------------------------------------------------
 
-    def attribute(self, fields: Sequence[DiscoveredField]) -> dict[str, str]:
+    def attribute(self, fields: Sequence[SettingField]) -> dict[str, str]:
         """Return ``{field_name: package_label}`` for every field.
 
         Builds the dynamic attribution map on the first call and caches
