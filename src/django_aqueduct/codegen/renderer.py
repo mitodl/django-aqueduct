@@ -161,6 +161,45 @@ class ModelRenderer:
         self._fields = fields
         self._class_name = class_name
 
+    def _render_grouped_fields(self) -> list[str]:
+        """Render fields grouped by owning package (or source module) with headers.
+
+        Groups are ordered django-first, project-last, everything else
+        alphabetically — matching the v1 generator's provenance sections. When
+        no field carries an ``owning_package`` and every field shares one
+        source module, a single unlabelled block is emitted (no header noise).
+        """
+        from collections import defaultdict  # noqa: PLC0415
+
+        use_package = any(f.owning_package for f in self._fields)
+
+        def group_of(f: SettingField) -> str:
+            if use_package:
+                return f.owning_package or f.provenance.source_module
+            return f.provenance.source_module
+
+        groups: dict[str, list[SettingField]] = defaultdict(list)
+        for f in self._fields:
+            groups[group_of(f)].append(f)
+
+        def group_sort_key(name: str) -> tuple[int, str]:
+            if name == "django":
+                return (0, "")
+            if name == "project":
+                return (2, "")
+            return (1, name)
+
+        # A single group with no package attribution needs no header.
+        emit_headers = use_package or len(groups) > 1
+
+        out: list[str] = []
+        for group_name in sorted(groups, key=group_sort_key):
+            if emit_headers:
+                out.append(f"    # ===== {group_name} =====")
+            for f in groups[group_name]:
+                out.append(_render_field(f))
+        return out
+
     def _all_imports(self) -> frozenset[ImportSpec]:
         specs: set[ImportSpec] = set(_BASE_IMPORTS)
         if any(f.env_aliases for f in self._fields):
@@ -193,8 +232,7 @@ class ModelRenderer:
         lines.append(config_line)
         lines.append("")
         lines.append(region_open("generated", "fields"))
-        for f in self._fields:
-            lines.append(_render_field(f))
+        lines.extend(self._render_grouped_fields())
         lines.append(region_close("generated", "fields"))
         lines.append("")
         lines.append(region_open("preserved", "validators"))

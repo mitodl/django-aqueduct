@@ -7,7 +7,13 @@ import ast
 import pytest
 
 from django_aqueduct.codegen.renderer import ModelRenderer
-from django_aqueduct.discovery.ir import DefaultStrategy
+from django_aqueduct.discovery.ir import (
+    Default,
+    DefaultStrategy,
+    Provenance,
+    SettingField,
+    TypeRef,
+)
 from django_aqueduct.discovery.static import StaticModuleInspector
 
 FIXTURE = "testapp.v2_fixture_settings"
@@ -177,6 +183,36 @@ def test_aliased_import_renders_and_instantiates(fields, tmp_path):
     module = importlib.util.module_from_spec(spec)
     sys.modules["gen_alias"] = module
     spec.loader.exec_module(module)  # NameError here if the alias was lost
+
+
+def test_fields_grouped_by_package_with_ordering():
+    def fld(name: str, package: str) -> SettingField:
+        return SettingField(
+            name=name,
+            type=TypeRef("str"),
+            default=Default.literal_("x"),
+            owning_package=package,
+            provenance=Provenance(source_module="m"),
+        )
+
+    src = ModelRenderer(
+        [
+            fld("ZEBRA", "project"),
+            fld("SECRET_HELPER", "celery"),
+            fld("DEBUG", "django"),
+        ]
+    ).render()
+    # django first, third-party middle, project last.
+    d = src.index("# ===== django =====")
+    c = src.index("# ===== celery =====")
+    p = src.index("# ===== project =====")
+    assert d < c < p
+
+
+def test_single_module_has_no_group_header(fields):
+    # No attribution + one source module → a clean unlabelled block.
+    src = ModelRenderer(fields).render()
+    assert "# =====" not in src
 
 
 def test_render_parses(fields):
