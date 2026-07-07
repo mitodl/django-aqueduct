@@ -95,3 +95,11 @@ def test_parity_config_loaded(tmp_path: Path) -> None:
     assert cfg.parity_model == "a.m:AqueductSettings"
     assert cfg.parity_legacy == "a.settings"
     assert cfg.parity_ignore == ["SECRET_KEY", "ENVIRONMENT"]
+
+
+def test_parity_ignore_stripped(tmp_path: Path) -> None:
+    root = _write_pyproject(
+        tmp_path,
+        "[tool.aqueduct]\nparity_ignore = ['  SECRET_KEY ', '', '   ', 'X']\n",
+    )
+    assert load_config(root).parity_ignore == ["SECRET_KEY", "X"]

@@ -112,14 +112,32 @@ def compare(
             continue
 
         m_val, l_val = model_values[name], legacy_values[name]
+        # Normalize list/tuple so a list-vs-tuple difference isn't a false type
+        # divergence; keep the originals in the report for readability.
+        n_m, n_l = _normalize(m_val), _normalize(l_val)
         # bool is a subclass of int; compare types before values so a bool vs
         # int (1 == True) does not slip through as "equal".
-        if type(m_val) is not type(l_val):
+        if type(n_m) is not type(n_l):
             report.divergences.append(Divergence(name, m_val, l_val, "type"))
-        elif m_val != l_val:
+        elif n_m != n_l:
             report.divergences.append(Divergence(name, m_val, l_val, "value"))
 
     return report
+
+
+def _normalize(value: Any) -> Any:
+    """Coerce tuples to lists (recursively) for comparison.
+
+    Django uses lists and tuples interchangeably (``ALLOWED_HOSTS``,
+    ``INSTALLED_APPS``, ``MIDDLEWARE``), and pydantic's ``model_dump()`` emits
+    lists where a legacy module may use tuples. Without this, that difference
+    would be reported as a spurious type divergence.
+    """
+    if isinstance(value, list | tuple):
+        return [_normalize(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _normalize(v) for k, v in value.items()}
+    return value
 
 
 def uppercase_settings(module: Any) -> dict[str, Any]:

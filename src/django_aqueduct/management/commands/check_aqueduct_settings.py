@@ -97,11 +97,11 @@ class Command(BaseCommand):
 
     def _model_values(self, model_ref: str) -> dict[str, Any]:
         """Instantiate the model from ``module:Class`` and return model_dump()."""
-        if ":" not in model_ref:
+        module_path, sep, class_name = model_ref.partition(":")
+        if not sep or not module_path or not class_name:
             raise CommandError(
                 f"--model must be 'module.path:ClassName', got {model_ref!r}."
             )
-        module_path, _, class_name = model_ref.partition(":")
         module = self._import(module_path)
         try:
             model_cls = getattr(module, class_name)

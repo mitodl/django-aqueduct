@@ -103,5 +103,7 @@ def load_config(start: Path | None = None) -> AqueductConfig:
         cfg.parity_legacy = table["parity_legacy"]
     parity_ignore = table.get("parity_ignore")
     if isinstance(parity_ignore, list):
-        cfg.parity_ignore = [str(x) for x in parity_ignore]
+        cfg.parity_ignore = [
+            stripped for x in parity_ignore if (stripped := str(x).strip())
+        ]
     return cfg

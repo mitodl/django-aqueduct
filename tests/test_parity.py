@@ -76,3 +76,25 @@ def test_command_bad_model_ref() -> None:
         call_command(
             "check_aqueduct_settings", model="no_colon", legacy="parity_legacy"
         )
+
+
+def test_list_vs_tuple_not_flagged() -> None:
+    # Django uses list/tuple interchangeably; model_dump gives lists.
+    report = compare({"HOSTS": ["a", "b"]}, {"HOSTS": ("a", "b")})
+    assert report.in_sync is True
+
+
+def test_nested_list_tuple_normalized() -> None:
+    report = compare({"X": {"k": ["a", ("b", "c")]}}, {"X": {"k": ("a", ["b", "c"])}})
+    assert report.in_sync is True
+
+
+def test_list_tuple_value_difference_still_caught() -> None:
+    report = compare({"HOSTS": ["a"]}, {"HOSTS": ("b",)})
+    assert [(d.name, d.kind) for d in report.divergences] == [("HOSTS", "value")]
+
+
+def test_command_empty_model_class_rejected() -> None:
+    for bad in ("mod:", ":Class"):
+        with pytest.raises(CommandError, match="module.path:ClassName"):
+            call_command("check_aqueduct_settings", model=bad, legacy="parity_legacy")
