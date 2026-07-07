@@ -98,6 +98,16 @@ def test_package_extension_present_only_when_attributed() -> None:
     assert "x-aqueduct-package" not in props["MY_CUSTOM"]
 
 
+def test_redacted_keeps_type_but_omits_default() -> None:
+    # A secret is still configurable from a ConfigMap, so keep its type; only
+    # the observed value is withheld.
+    f = _field("SECRET_KEY", type_base="str", default=Default.redacted(), optional=True)
+    prop = SchemaGenerator([f]).generate()["properties"]["SECRET_KEY"]
+    assert prop["type"] == "string"
+    assert "default" not in prop
+    assert prop["x-aqueduct-default-strategy"] == "redacted"
+
+
 def test_set_default_emitted_as_sorted_list() -> None:
     # sets aren't JSON-serialisable; they map to array and must be emitted as a
     # (sorted, deterministic) list rather than dropped.

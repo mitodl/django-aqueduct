@@ -181,12 +181,14 @@ class SchemaGenerator:
     def _field_to_schema(self, f: SettingField) -> dict[str, Any]:
         """Convert a single field to a JSON Schema property fragment.
 
-        DERIVED and REDACTED fields produce an unconstrained ``{}`` schema
-        because their values are not meaningfully configurable from an
-        external ConfigMap. Dict/list literal defaults use genson when
-        available for a richer schema than the annotation alone.
+        DERIVED fields produce an unconstrained ``{}`` schema because their
+        values are computed at runtime, not supplied from an external
+        ConfigMap. REDACTED fields (secrets) *are* configurable, so they keep
+        their type constraint (usually ``string``) and merely omit ``default``.
+        Dict/list literal defaults use genson when available for a richer
+        schema than the annotation alone.
         """
-        if f.default.strategy in (DefaultStrategy.DERIVED, DefaultStrategy.REDACTED):
+        if f.default.strategy is DefaultStrategy.DERIVED:
             return {}
 
         if f.default.strategy in (
