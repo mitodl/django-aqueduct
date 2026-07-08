@@ -136,11 +136,36 @@ def _render_typeddict(td: TypedDictDef) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _render_field(f: SettingField, annotation_override: str | None = None) -> str:
+def _container_kind(base: str) -> str | None:
+    """Return ``"list"``/``"dict"`` for a container base type, else ``None``.
+
+    ``pydantic-settings`` json-decodes any complex-typed field's env value by
+    default, which fails for the non-JSON list/dict formats real env vars
+    actually use (comma-separated, Python-literal, crontab strings, ...).
+    Fields with these bases get a ``NoDecode`` annotation plus a
+    ``field_validator`` that parses them instead.
+    """
+    if base.startswith("list["):
+        return "list"
+    if base.startswith("dict["):
+        return "dict"
+    return None
+
+
+def _render_field(
+    f: SettingField,
+    annotation_override: str | None = None,
+    *,
+    no_decode: bool = False,
+) -> str:
     """Render one field as a Pydantic ``Field`` declaration (indented, no newline).
 
     ``annotation_override`` supplies a genson-enriched annotation (e.g.
     ``dict[str, DatabasesEntry]``) in place of the IR's ``dict[str, Any]``.
+    ``no_decode`` wraps the annotation in ``Annotated[..., NoDecode]`` so the
+    corresponding ``field_validator`` (see
+    :meth:`ModelRenderer._render_container_decoders`) receives the raw env
+    string instead of a ``json.loads`` failure.
     """
     default_kwarg, comment = _render_default_expr(f)
 
@@ -151,6 +176,8 @@ def _render_field(f: SettingField, annotation_override: str | None = None) -> st
     if default_kwarg == "default=None" and not type_ref.optional:
         type_ref = type_ref.with_optional()
     annotation = annotation_override or type_ref.render()
+    if no_decode:
+        annotation = f"Annotated[{annotation}, NoDecode]"
 
     parts = [default_kwarg]
     if f.env_aliases:
@@ -196,7 +223,9 @@ class ModelRenderer:
         self._class_name = class_name
         self._extra = extra
 
-    def _render_grouped_fields(self, enriched: dict[str, str]) -> list[str]:
+    def _render_grouped_fields(
+        self, enriched: dict[str, str], no_decode_names: set[str]
+    ) -> list[str]:
         """Render fields grouped by owning package (or source module) with headers.
 
         Groups are ordered django-first, project-last, everything else
@@ -232,8 +261,96 @@ class ModelRenderer:
             if emit_headers:
                 out.append(f"    # ===== {group_name} =====")
             for f in groups[group_name]:
-                out.append(_render_field(f, enriched.get(f.name)))
+                out.append(
+                    _render_field(
+                        f,
+                        enriched.get(f.name),
+                        no_decode=f.name in no_decode_names,
+                    )
+                )
         return out
+
+    def _container_fields(
+        self, enriched: dict[str, str]
+    ) -> tuple[list[str], list[str]]:
+        """Return ``(list_field_names, dict_field_names)`` sorted alphabetically.
+
+        Uses the *rendered* base (post genson-enrichment) so an enriched
+        ``dict[str, DatabasesEntry]`` is still recognised as a dict.
+        """
+        list_fields: list[str] = []
+        dict_fields: list[str] = []
+        for f in self._fields:
+            kind = _container_kind(enriched.get(f.name, f.type.base))
+            if kind == "list":
+                list_fields.append(f.name)
+            elif kind == "dict":
+                dict_fields.append(f.name)
+        return sorted(list_fields), sorted(dict_fields)
+
+    def _render_container_decoders(
+        self, list_fields: list[str], dict_fields: list[str]
+    ) -> list[str]:
+        """Render ``field_validator``s that parse env strings for containers.
+
+        ``pydantic-settings`` json-decodes any complex-typed field's env
+        value by default, which already handles genuine JSON (``[true,
+        false]``, ``{"a": null}``); real env vars also feed list/dict
+        settings as comma-separated or Python-literal strings (this is
+        exactly what the mitol ``EnvParser`` list/crontab helpers produce),
+        which raise ``SettingsError`` before the model ever instantiates.
+        Paired with the ``NoDecode`` annotation on each field (see
+        ``_render_field``), these validators receive the raw string and try
+        ``json.loads`` first (so JSON inputs keep working exactly as
+        before), then ``ast.literal_eval`` (Python-literal strings, e.g.
+        single-quoted), then — lists only — a final comma-split fallback.
+        """
+        lines: list[str] = []
+        if list_fields:
+            choices = ", ".join(repr(name) for name in list_fields)
+            lines.append(f'    @field_validator({choices}, mode="before")')
+            lines.append("    @classmethod")
+            lines.append(
+                "    def _aqueduct_decode_list_fields(cls, value: object) -> object:"
+            )
+            lines.append(
+                '        """Parse a list from a JSON, Python-literal, or '
+                'comma-separated env string."""'
+            )
+            lines.append("        if not isinstance(value, str):")
+            lines.append("            return value")
+            lines.append("        try:")
+            lines.append("            parsed = json.loads(value)")
+            lines.append("        except (ValueError, TypeError):")
+            lines.append("            try:")
+            lines.append("                parsed = ast.literal_eval(value)")
+            lines.append("            except (ValueError, SyntaxError):")
+            lines.append("                parsed = None")
+            lines.append("        if isinstance(parsed, list):")
+            lines.append("            return parsed")
+            lines.append('        return [item.strip() for item in value.split(",")]')
+            if dict_fields:
+                lines.append("")
+        if dict_fields:
+            choices = ", ".join(repr(name) for name in dict_fields)
+            lines.append(f'    @field_validator({choices}, mode="before")')
+            lines.append("    @classmethod")
+            lines.append(
+                "    def _aqueduct_decode_dict_fields(cls, value: object) -> object:"
+            )
+            lines.append(
+                '        """Parse a dict from a JSON or Python-literal env string."""'
+            )
+            lines.append("        if not isinstance(value, str):")
+            lines.append("            return value")
+            lines.append("        try:")
+            lines.append("            parsed = json.loads(value)")
+            lines.append("        except (ValueError, TypeError):")
+            lines.append("            parsed = None")
+            lines.append("        if isinstance(parsed, dict):")
+            lines.append("            return parsed")
+            lines.append("        return ast.literal_eval(value)")
+        return lines
 
     def _enrich_dicts(self) -> tuple[dict[str, str], list[TypedDictDef]]:
         """Return ``(enriched_annotations, typeddict_defs)`` for dict-valued fields.
@@ -271,10 +388,16 @@ class ModelRenderer:
             defs.extend(new_defs)
         return enriched, defs
 
-    def _all_imports(self) -> frozenset[ImportSpec]:
+    def _all_imports(self, *, has_containers: bool = False) -> frozenset[ImportSpec]:
         specs: set[ImportSpec] = set(_BASE_IMPORTS)
         if any(f.env_aliases for f in self._fields):
             specs.add(ImportSpec("pydantic", "AliasChoices"))
+        if has_containers:
+            specs.add(ImportSpec("ast"))
+            specs.add(ImportSpec("json"))
+            specs.add(ImportSpec("typing", "Annotated"))
+            specs.add(ImportSpec("pydantic", "field_validator"))
+            specs.add(ImportSpec("pydantic_settings", "NoDecode"))
         for f in self._fields:
             specs |= f.all_imports()
         return frozenset(specs)
@@ -282,7 +405,8 @@ class ModelRenderer:
     def render(self) -> str:
         """Return the complete generated module as a string."""
         enriched, typeddict_defs = self._enrich_dicts()
-        specs = set(self._all_imports())
+        list_fields, dict_fields = self._container_fields(enriched)
+        specs = set(self._all_imports(has_containers=bool(list_fields or dict_fields)))
         if typeddict_defs:
             specs.add(ImportSpec("typing", "TypedDict"))
         imports = _render_imports(frozenset(specs))
@@ -314,10 +438,16 @@ class ModelRenderer:
         lines.append("")
         lines.append(config_line)
         lines.append("")
+        no_decode_names = set(list_fields) | set(dict_fields)
         lines.append(region_open("generated", "fields"))
-        lines.extend(self._render_grouped_fields(enriched))
+        lines.extend(self._render_grouped_fields(enriched, no_decode_names))
         lines.append(region_close("generated", "fields"))
         lines.append("")
+        if list_fields or dict_fields:
+            lines.append(region_open("generated", "container_decoders"))
+            lines.extend(self._render_container_decoders(list_fields, dict_fields))
+            lines.append(region_close("generated", "container_decoders"))
+            lines.append("")
         lines.append(region_open("preserved", "validators"))
         lines.append("    # Add @model_validator / @field_validator methods here.")
         lines.append("    # This region is preserved across regeneration.")
