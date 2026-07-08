@@ -159,3 +159,76 @@ def test_no_imports_is_tolerated():
     wrapped = wrap_existing(src)
     assert "aqueduct:generated:imports" not in wrapped
     assert "X: int" in generated_regions(wrapped)["fields"]
+
+
+def test_error_message_does_not_imply_name_based_detection():
+    # Detection is by BaseSettings inheritance, not by the class being named
+    # 'AqueductSettings' — the error text shouldn't suggest otherwise.
+    with pytest.raises(WrapExistingError) as exc_info:
+        wrap_existing("X = 1\n")
+    assert "AqueductSettings" not in str(exc_info.value)
+
+
+def test_interleaved_statement_between_imports_is_excluded_from_region():
+    # A module-level statement sitting between two import statements must
+    # never end up inside the generated:imports region (it would be
+    # silently deleted on the next regeneration).
+    src = (
+        "import os\n"
+        "MARKER = 'keep me'\n"
+        "import sys\n\n"
+        "class AqueductSettings(BaseSettings):\n"
+        "    X: int = 1\n"
+    )
+    wrapped = wrap_existing(src)
+    imports_region = generated_regions(wrapped)["imports"]
+    assert "import os" in imports_region
+    assert "MARKER" not in imports_region
+    assert "import sys" not in imports_region
+    # Left untouched, outside any region — not silently dropped.
+    assert "MARKER = 'keep me'" in wrapped
+    assert "import sys" in wrapped
+
+
+def test_later_stray_import_after_class_is_excluded_from_region():
+    src = (
+        "import os\n\n"
+        "class AqueductSettings(BaseSettings):\n"
+        "    X: int = 1\n\n"
+        "import sys\n"
+    )
+    wrapped = wrap_existing(src)
+    imports_region = generated_regions(wrapped)["imports"]
+    assert "import os" in imports_region
+    assert "import sys" not in imports_region
+    assert "import sys" in wrapped  # preserved, just outside any region
+
+
+def test_module_docstring_before_leading_imports_is_skipped():
+    src = (
+        '"""Module docstring."""\n\n'
+        "import os\n\n"
+        "class AqueductSettings(BaseSettings):\n"
+        "    X: int = 1\n"
+    )
+    wrapped = wrap_existing(src)
+    assert "import os" in generated_regions(wrapped)["imports"]
+    assert '"""Module docstring."""' in wrapped
+
+
+def test_missing_trailing_newline_produces_valid_python():
+    src = "class AqueductSettings(BaseSettings):\n    X: int = 1"  # no trailing \n
+    wrapped = wrap_existing(src)
+    ast.parse(wrapped)
+    assert "X: int = 1\n" in wrapped
+    assert "X: int = 1    # <<<" not in wrapped
+
+
+def test_crlf_source_stays_crlf():
+    src = "import os\r\n\r\nclass AqueductSettings(BaseSettings):\r\n    X: int = 1\r\n"
+    wrapped = wrap_existing(src)
+    assert "\r\n" in wrapped
+    assert "aqueduct:generated:imports\r\n" in wrapped
+    # Every inserted marker line should use CRLF, not a bare LF.
+    for line in wrapped.split("\r\n")[:-1]:
+        assert "\n" not in line

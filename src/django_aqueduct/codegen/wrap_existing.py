@@ -66,8 +66,7 @@ def _find_settings_class(tree: ast.Module, class_name: str | None) -> ast.ClassD
     if not matches:
         raise WrapExistingError(
             "No class deriving from BaseSettings found at module level. "
-            "Pass class_name explicitly if the class isn't named "
-            "'AqueductSettings'."
+            "Pass class_name explicitly to select it directly."
         )
     if len(matches) > 1:
         names = ", ".join(c.name for c in matches)
@@ -79,10 +78,30 @@ def _find_settings_class(tree: ast.Module, class_name: str | None) -> ast.ClassD
 
 
 def _import_span(tree: ast.Module) -> _Span | None:
-    import_nodes = [n for n in tree.body if isinstance(n, ast.Import | ast.ImportFrom)]
-    if not import_nodes:
+    """Return the span of the *leading* contiguous run of top-level imports.
+
+    Only the import block at the very top of the module is wrapped (past an
+    optional module docstring) — an import statement appearing later, after
+    other code, is left outside any region rather than risking either (a)
+    swallowing whatever sits between it and the leading block into a region
+    that gets silently overwritten on regeneration, or (b) ballooning the
+    generated:imports region to cover most of the file.
+    """
+    body = list(tree.body)
+    idx = 0
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        idx += 1
+    start = idx
+    while idx < len(body) and isinstance(body[idx], ast.Import | ast.ImportFrom):
+        idx += 1
+    if idx == start:
         return None
-    return _Span(import_nodes[0].lineno, _end_lineno(import_nodes[-1]))
+    return _Span(body[start].lineno, _end_lineno(body[idx - 1]))
 
 
 def _classify_body(cls: ast.ClassDef) -> tuple[_Span, _Span | None]:
@@ -160,6 +179,15 @@ def wrap_existing(source: str, *, class_name: str | None = None) -> str:
             "normally instead of wrapping again."
         )
 
+    # A marker appended at end-of-file must land on its own line. Without a
+    # trailing newline it would glue onto the last line of code instead
+    # (`return self    # <<< aqueduct:...`), producing malformed Python.
+    # Detect the file's dominant line ending so inserted markers match it —
+    # otherwise a CRLF file would come back with mixed line endings.
+    newline = "\r\n" if "\r\n" in source else "\n"
+    if source and not source.endswith(("\n", "\r")):
+        source += newline
+
     tree = ast.parse(source)
     cls = _find_settings_class(tree, class_name)
     fields_span, validators_span = _classify_body(cls)
@@ -184,5 +212,5 @@ def wrap_existing(source: str, *, class_name: str | None = None) -> str:
 
     lines = source.splitlines(keepends=True)
     for lineno, marker in sorted(inserts, key=lambda pair: pair[0], reverse=True):
-        lines.insert(lineno - 1, marker + "\n")
+        lines.insert(lineno - 1, marker + newline)
     return "".join(lines)
