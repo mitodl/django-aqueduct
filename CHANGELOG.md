@@ -5,6 +5,47 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0]
+
+### Added
+
+- **Dependency-surface reporting (`report_settings_surface`).** A new
+  management command that enumerates, per installed dependency, the settings it
+  introduces into the Django settings namespace — name, type, and the package's
+  own default — and reconciles each against what *this* project sets:
+  **set** (with the project's value), **overridden** (project literal differs
+  from the package default), or **unset**. It is a decision aid printed to
+  stdout in `--format table|json|markdown`; unlike `generate_aqueduct_settings`
+  it writes no model and adds nothing to the generated file, so `generate
+  --check` drift output stays clean. Surface data comes from (1) packages that
+  declare a surface via the new `django_aqueduct.settings_surface` entry-point
+  group (authoritative), and (2) built-in extractors for Django
+  `global_settings`, DRF `rest_framework.settings.DEFAULTS` (with
+  `IMPORT_STRINGS` awareness), and Celery `celery.app.defaults`, scoped to the
+  packages in `INSTALLED_APPS`. Output is deterministic (stable sort by
+  distribution then name) and secret-shaped names are redacted. See
+  ADR-0001 (`docs/architecture/decisions/`).
+- **Public `Setting` declaration dataclass + `UNSET` sentinel**
+  (`django_aqueduct.Setting` / `django_aqueduct.surface`). An import-light
+  (stdlib-only) dataclass any dependency can use to advertise its settings
+  surface under the `django_aqueduct.settings_surface` entry-point group — the
+  generalized analogue of DRF's `DEFAULTS`. `default=UNSET` (no default
+  declared) is distinct from `default=None` (the default *is* `None`).
+- **`[tool.aqueduct]` keys** `dependency_surface`,
+  `dependency_surface_packages`, and `dependency_surface_report_format`
+  (default `"table"`); command flags override them.
+
+### Changed
+
+- The Django/DRF/Celery imports used for package attribution now live in a
+  single extraction pass (`discovery/dependency_surface.py`);
+  `PackageAttributor` derives its name→label maps from it instead of importing
+  those modules itself. No behavior change to attribution.
+
+Opt-in model emission of unset dependency settings, and the generic
+`getattr(settings, "X", DEFAULT)` AST-default fallback provider, are deferred
+follow-ups (see ADR-0001).
+
 ## [0.10.0]
 
 ### Fixed

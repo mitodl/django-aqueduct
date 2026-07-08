@@ -115,3 +115,34 @@ def test_plugins_and_attribution_rules_config(tmp_path: Path) -> None:
     cfg = load_config(root)
     assert cfg.use_plugins is True
     assert cfg.attribution_rules == [("MYAPP_", "my-pkg"), ("FOO", "foo-pkg")]
+
+
+def test_dependency_surface_config(tmp_path: Path) -> None:
+    root = _write_pyproject(
+        tmp_path,
+        "[tool.aqueduct]\n"
+        "dependency_surface = true\n"
+        "dependency_surface_packages = ['  celery ', '', 'djangorestframework']\n"
+        "dependency_surface_report_format = 'json'\n",
+    )
+    cfg = load_config(root)
+    assert cfg.dependency_surface is True
+    assert cfg.dependency_surface_packages == ["celery", "djangorestframework"]
+    assert cfg.dependency_surface_report_format == "json"
+
+
+def test_dependency_surface_defaults(tmp_path: Path) -> None:
+    root = _write_pyproject(tmp_path, "[tool.aqueduct]\n")
+    cfg = load_config(root)
+    assert cfg.dependency_surface is False
+    assert cfg.dependency_surface_packages == []
+    assert cfg.dependency_surface_report_format == "table"
+
+
+def test_invalid_report_format_raises(tmp_path: Path) -> None:
+    root = _write_pyproject(
+        tmp_path,
+        "[tool.aqueduct]\ndependency_surface_report_format = 'yaml'\n",
+    )
+    with pytest.raises(ConfigError, match="dependency_surface_report_format"):
+        load_config(root)
