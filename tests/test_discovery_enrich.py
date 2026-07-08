@@ -240,11 +240,50 @@ def test_url_hint_ignores_non_url_looking_plain_string():
     assert f.type.base == "str"
 
 
-def test_url_hint_sqlite_style_uri_needs_name_hint():
-    # sqlite:///db.sqlite3 has no netloc, so the value heuristic alone won't
-    # catch it -- the _URL name suffix must carry it.
+def test_url_hint_sqlite_style_uri_promotes_on_value_alone():
+    # sqlite:///db.sqlite3 has no netloc but is still a real pydantic.AnyUrl
+    # (unlike the old urlparse-scheme+netloc heuristic) -- the value alone
+    # is sufficient, no name hint required.
     f = _field(
-        "DATABASE_URL", base="str", default=Default.literal_("sqlite:///db.sqlite3")
+        "DB_LOCATION", base="str", default=Default.literal_("sqlite:///db.sqlite3")
+    )
+    apply_url_type_hints([f])
+    assert f.type.base == "AnyUrl"
+
+
+def test_url_hint_rejects_relative_default_despite_matching_name():
+    # The 0.8.0 regression: a name ending in _URL whose actual default is a
+    # relative Django path/resolver-name/empty string must NOT be promoted,
+    # since AnyUrl(default) would raise ValidationError at instantiation.
+    for name, value in (
+        ("STATIC_URL", "/static/"),
+        ("MEDIA_URL", "/media/"),
+        ("LOGIN_URL", "login"),
+        ("LOGIN_REDIRECT_URL", "/"),
+        ("SOCIAL_AUTH_KEYCLOAK_AUTHORIZATION_URL", ""),
+        ("SITES_URL", "sites"),
+    ):
+        f = _field(name, base="str", default=Default.literal_(value))
+        apply_url_type_hints([f])
+        assert f.type.base == "str", f"{name}={value!r} should not promote"
+
+
+def test_url_hint_excludes_known_django_relative_names_without_a_default():
+    # No literal value to check (None default) -- the name-hint fallback
+    # must skip Django's own conventionally-relative *_URL settings.
+    f = _field("LOGIN_URL", base="str")
+    apply_url_type_hints([f])
+    assert f.type.base == "str"
+
+
+def test_url_hint_name_fallback_still_applies_to_required_field():
+    # REQUIRED (no default at all) with an unremarkable *_URL name still
+    # falls back to the name heuristic.
+    f = SettingField(
+        name="APP_BASE_URL",
+        type=TypeRef("str"),
+        default=Default.required(),
+        provenance=Provenance(source_module="m"),
     )
     apply_url_type_hints([f])
     assert f.type.base == "AnyUrl"

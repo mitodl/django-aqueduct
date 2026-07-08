@@ -41,6 +41,7 @@ class AqueductConfig:
     parity_legacy: str | None = None
     parity_ignore: list[str] = field(default_factory=list)
     use_plugins: bool = False
+    enrich_url_types: bool = False
     attribution_rules: list[tuple[str, str]] = field(default_factory=list)
 
 
@@ -110,6 +111,8 @@ def load_config(start: Path | None = None) -> AqueductConfig:
         ]
     if isinstance(table.get("use_plugins"), bool):
         cfg.use_plugins = table["use_plugins"]
+    if isinstance(table.get("enrich_url_types"), bool):
+        cfg.enrich_url_types = table["enrich_url_types"]
     rules = table.get("attribution_rules")
     if isinstance(rules, list):
         cfg.attribution_rules = [
