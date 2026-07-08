@@ -681,9 +681,6 @@ class ModelRenderer:
         list_fields, dict_fields = self._container_fields(enriched)
         no_decode_names = set(list_fields) | set(dict_fields)
 
-        # Render bodies before imports: whether `Any` needs importing depends
-        # on whether any rendered field/typeddict actually uses it (see
-        # `_BASE_IMPORTS`), which we only know after rendering them.
         field_lines = self._render_grouped_fields(enriched, no_decode_names)
         container_lines = (
             self._render_container_decoders(list_fields, dict_fields)
@@ -697,10 +694,19 @@ class ModelRenderer:
         )
 
         specs = set(self._all_imports(has_containers=bool(list_fields or dict_fields)))
-        if any(
-            _ANY_RE.search(line)
-            for line in (*field_lines, *container_lines, *typeddict_lines)
-        ):
+        # Check the actual annotations (not the rendered lines) for `Any` — a
+        # rendered line can also contain "Any" inside a description/comment
+        # (e.g. `description="Can be Any value"`), which would otherwise
+        # trigger an unnecessary (and F401-flagged) `Any` import.
+        has_any = any(
+            _ANY_RE.search(enriched.get(f.name) or f.type.render())
+            for f in self._fields
+        ) or any(
+            _ANY_RE.search(field.annotation)
+            for td in typeddict_defs
+            for field in td.fields
+        )
+        if has_any:
             specs.add(ImportSpec("typing", "Any"))
         if typeddict_defs:
             specs.add(ImportSpec("typing", "TypedDict"))
