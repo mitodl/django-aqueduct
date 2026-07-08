@@ -302,6 +302,30 @@ it does not rely on the tag push itself to trigger publishing, since a push
 made with the default `GITHUB_TOKEN` does not fire other workflows' `push`
 triggers.
 
+**PyPI Trusted Publisher / workflow filename coupling:** PyPI verifies the
+OIDC certificate's "Build Config URI" against the *top-level* (caller)
+workflow filename, not the reusable workflow that actually runs the publish
+step. Because "Tag release" invokes `publish.yml` via `uses:`, the
+certificate names `tag-release.yml`, not `publish.yml`. If the PyPI project's
+Trusted Publisher is only configured for `publish.yml`, every tag-triggered
+release fails at upload with an error like:
+
+```
+Certificate's Build Config URI (.github/workflows/tag-release.yml@refs/heads/main)
+does not match expected Trusted Publisher (publish.yml @ mitodl/django-aqueduct)
+```
+
+On pypi.org → project → Publishing, this repo needs **two** trusted
+publishers registered against the `pypi` environment: one for
+`tag-release.yml` (the automatic path) and one for `publish.yml` (manual
+`workflow_dispatch`). If a release fails with the certificate mismatch above,
+the immediate unblock is a direct dispatch, which goes through `publish.yml`
+as the top-level workflow and matches the existing publisher:
+
+```
+gh workflow run publish.yml --ref vX.Y.Z
+```
+
 ---
 
 ## License
