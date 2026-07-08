@@ -438,7 +438,7 @@ def test_enrich_runtime_refines_dict_shape(
     )
     out = capsys.readouterr().out
     ast.parse(out)
-    assert "DATABASES: dict[str, DatabasesEntry]" in out
+    assert "DATABASES: Annotated[dict[str, DatabasesEntry], NoDecode]" in out
     assert "class DatabasesEntry(TypedDict, total=False):" in out
 
 

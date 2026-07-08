@@ -38,6 +38,44 @@ def test_finds_membership_candidates(tmp_path):
     assert literals["LOG_LEVEL"] == {"DEBUG", "INFO", "WARNING"}
 
 
+def test_not_equal_is_not_evidence_of_a_valid_value(tmp_path):
+    # `!=` means the value is excluded, not that it's a valid candidate --
+    # counting it would produce exactly backwards evidence.
+    _write(
+        tmp_path,
+        "a.py",
+        "from django.conf import settings\n"
+        "if settings.ENVIRONMENT != 'production':\n"
+        "    pass\n",
+    )
+    literals, _ = find_usage_candidates([str(tmp_path)], ["ENVIRONMENT"])
+    assert literals == {}
+
+
+def test_not_in_is_not_evidence_of_valid_values(tmp_path):
+    _write(
+        tmp_path,
+        "a.py",
+        "from django.conf import settings\n"
+        "if settings.ENVIRONMENT not in ('dev', 'test'):\n"
+        "    pass\n",
+    )
+    literals, _ = find_usage_candidates([str(tmp_path)], ["ENVIRONMENT"])
+    assert literals == {}
+
+
+def test_not_equal_alongside_equal_only_counts_the_equal(tmp_path):
+    _write(
+        tmp_path,
+        "a.py",
+        "from django.conf import settings\n"
+        "if settings.ENVIRONMENT == 'dev':\n    pass\n"
+        "if settings.ENVIRONMENT != 'production':\n    pass\n",
+    )
+    literals, _ = find_usage_candidates([str(tmp_path)], ["ENVIRONMENT"])
+    assert literals["ENVIRONMENT"] == {"dev"}
+
+
 def test_literal_reverse_operand_order(tmp_path):
     _write(
         tmp_path,

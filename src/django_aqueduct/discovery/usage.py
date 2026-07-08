@@ -15,6 +15,8 @@ paths with :mod:`ast` and looks for comparisons/membership checks against
 
 * **Equality/membership candidates** — ``settings.X == "a"``,
   ``settings.X in ("a", "b")`` — evidence of a closed set of values.
+  ``!=``/``not in`` are deliberately ignored: they only say a value is
+  *excluded*, which is not evidence it's *valid*.
 * **Range bounds** — ``settings.X > 0``, ``0 <= settings.X <= 3600`` (in
   either operand order, including chained comparisons) — evidence of a
   numeric range.
@@ -155,7 +157,10 @@ def _walk_compare(
         left_name = _settings_attr_name(left, names)
         right_name = _settings_attr_name(right, names)
 
-        if isinstance(op, ast.Eq | ast.NotEq):
+        # Only positive matches (==, in) are evidence of a *valid* value.
+        # `!=`/`not in` say the opposite — the compared value is explicitly
+        # excluded — so counting them as candidates would be backwards.
+        if isinstance(op, ast.Eq):
             if left_name and not right_name:
                 ok, val = _literal(right)
                 if ok:
@@ -166,13 +171,16 @@ def _walk_compare(
                     literals.setdefault(right_name, set()).update(_scalars_only([val]))
             continue
 
-        if isinstance(op, ast.In | ast.NotIn):
+        if isinstance(op, ast.In):
             if left_name and not right_name:
                 ok, val = _literal(right)
                 if ok and isinstance(val, list | tuple | set | frozenset):
                     literals.setdefault(left_name, set()).update(
                         _scalars_only(list(val))
                     )
+            continue
+
+        if isinstance(op, ast.NotEq | ast.NotIn):
             continue
 
         if isinstance(op, ast.Gt | ast.GtE | ast.Lt | ast.LtE):

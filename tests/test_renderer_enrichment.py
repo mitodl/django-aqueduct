@@ -38,31 +38,32 @@ def test_dict_enrichment_overlay_takes_precedence():
         [f],
         dict_enrichment={"DATABASES": ("dict[str, DatabasesEntry]", [td])},
     ).render()
-    assert "DATABASES: dict[str, DatabasesEntry]" in src
+    # dict-typed → also gets NoDecode + a container_decoders validator (the
+    # renderer treats an overlay-provided dict type the same as any other).
+    assert "DATABASES: Annotated[dict[str, DatabasesEntry], NoDecode]" in src
     assert "class DatabasesEntry(TypedDict, total=False):" in src
     ast.parse(src)
 
 
 def test_dict_enrichment_overlay_works_without_genson(mocker):
-    """The externally-computed overlay doesn't need genson importable at render time."""
-    import django_aqueduct.codegen.renderer as renderer_mod
+    """The externally-computed overlay doesn't need genson at render time.
+
+    The overlay was already computed upstream (e.g. by discovery.runtime),
+    so genson reporting itself unavailable must not affect a field the
+    overlay already covers — the renderer's own genson-dependent literal-
+    default path never even runs for that field (see ``_enrich_dicts``:
+    fields already in ``enriched`` are skipped before it's consulted).
+    """
+    import django_aqueduct.codegen.dict_schema as dict_schema_mod
+
+    mocker.patch.object(dict_schema_mod, "_genson_available", return_value=False)
 
     f = _field("DATABASES", base="Any")
     td = TypedDictDef(class_name="DatabasesEntry", fields=[])
-
-    real_import = __import__
-
-    def fake_import(name, *args, **kwargs):
-        if name == "django_aqueduct.codegen.dict_schema":
-            raise ImportError("simulated: genson not installed")
-        return real_import(name, *args, **kwargs)
-
-    mocker.patch("builtins.__import__", side_effect=fake_import)
     src = ModelRenderer(
         [f], dict_enrichment={"DATABASES": ("dict[str, DatabasesEntry]", [td])}
     ).render()
-    assert "DATABASES: dict[str, DatabasesEntry]" in src
-    del renderer_mod  # imported only to document the module under test
+    assert "DATABASES: Annotated[dict[str, DatabasesEntry], NoDecode]" in src
 
 
 def test_literal_type_renders_with_import():
