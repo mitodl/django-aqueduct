@@ -122,9 +122,16 @@ python manage.py generate_aqueduct_settings \
   the inferred constraint in production; the scanned code only reflects the
   values/bounds it happens to check, not necessarily the field's full valid
   domain.
-- URL detection also runs **unconditionally**, no flag required: a `str`
-  field whose name ends in `_URL`/`_URI`, or whose static default parses as a
-  real URL, is promoted to `AnyUrl` for free.
+- **`--enrich-url-types`** is a separate, static, opt-in flag: a `str` field
+  whose literal default actually validates as an absolute `pydantic.AnyUrl`
+  is promoted (and paired with a `field_serializer` so `model_dump()` keeps
+  emitting `str`); a field with no literal value to check (required, derived,
+  or `None`) falls back to its name ending in `_URL`/`_URI`, minus a denylist
+  of Django settings that are conventionally relative (`STATIC_URL`,
+  `MEDIA_URL`, `LOGIN_URL`, `LOGIN_REDIRECT_URL`, `LOGOUT_REDIRECT_URL`, ...).
+  It's opt-in because the name-fallback path can still promote a required
+  field whose real env value turns out to be relative — review any resulting
+  `AnyUrl` before trusting it in production.
 
 ### Step 3 — Wire the shim
 

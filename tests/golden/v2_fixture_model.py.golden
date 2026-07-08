@@ -38,6 +38,11 @@ class AqueductSettings(BaseSettings):
     CACHE_BACKEND: Any = Field(
         default=None
     )  # DERIVED: reproduce in a @model_validator (conditional/computed value)
+    CORS_ALLOWED_ORIGINS: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [],
+        validation_alias=AliasChoices("CORS_ALLOWED_ORIGINS"),
+        description="mitol EnvParser's get_list_of_str reader must be typed list[str] (and get\nNoDecode + the container decoder), not fall through to Any.",  # noqa: E501
+    )
     DATA_DIR: pathlib.Path = Field(default_factory=lambda: pathlib.Path("/var/data"))
     DEBUG: bool = Field(default=False)
     DEFAULT_PRICE: decimal.Decimal = Field(default_factory=lambda: Decimal("9.99"))
@@ -82,7 +87,7 @@ class AqueductSettings(BaseSettings):
     # <<< aqueduct:generated:fields
 
     # >>> aqueduct:generated:container_decoders
-    @field_validator("ALLOWED_HOSTS", mode="before")
+    @field_validator("ALLOWED_HOSTS", "CORS_ALLOWED_ORIGINS", mode="before")
     @classmethod
     def _aqueduct_decode_list_fields(cls, value: object) -> object:
         """Parse a list from a JSON, Python-literal, or comma-separated env string."""
@@ -97,7 +102,12 @@ class AqueductSettings(BaseSettings):
                 parsed = None
         if isinstance(parsed, list):
             return parsed
-        return [item.strip() for item in value.split(",")]
+        stripped = value.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            stripped = stripped[1:-1].strip()
+        if not stripped:
+            return []
+        return [item.strip() for item in stripped.split(",")]
 
     # <<< aqueduct:generated:container_decoders
 

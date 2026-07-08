@@ -5,6 +5,58 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0]
+
+### Fixed
+
+- **`str` → `AnyUrl` promotion is now opt-in (`--enrich-url-types` /
+  `[tool.aqueduct] enrich_url_types`) and no longer promotes a field whose
+  own default can't satisfy `AnyUrl`.** Confirmed across all 5 app
+  integrations: the unconditional 0.8.0 promotion (any `str` field named
+  `*_URL`/`*_URI`) fired on the name alone, regardless of the field's
+  default — Django's own relative-URL settings (`STATIC_URL='/static/'`,
+  `MEDIA_URL='/media/'`, `LOGIN_URL='login'`, `*_REDIRECT_URL='/'`, an empty
+  `MITOL_API_BASE_URL`) all promoted to a type their default couldn't
+  validate under, raising `ValidationError` at model instantiation
+  (ocw-studio outright failed to instantiate). All 5 apps had to hand-revert
+  every promotion. A field with a concrete literal default is now promoted
+  only if that value actually validates as an absolute `pydantic.AnyUrl`;
+  the name-suffix heuristic is a fallback used only when there's no literal
+  value to check (`REQUIRED`/`DERIVED`/`EXPR` defaults, or `None`), and it
+  now excludes a denylist of conventionally-relative Django settings
+  (`STATIC_URL`, `MEDIA_URL`, `LOGIN_URL`, `LOGIN_REDIRECT_URL`,
+  `LOGOUT_REDIRECT_URL`, and friends).
+- **A promoted `AnyUrl` field now renders a paired `field_serializer`** so
+  `model_dump()` still emits `str` (matching the legacy setting's type)
+  instead of a `pydantic.Url` object — the type/value drift that broke
+  downstream `urljoin`/`rstrip` string ops and redis/celery/requests clients
+  in every app that kept an `AnyUrl` promotion.
+- **The generated list-field decoder now handles a bare `[*]` wildcard.**
+  mit-learn receives `ALLOWED_HOSTS=[*]` from a stray `.env` file (pulled in
+  by litellm's `load_dotenv()`); it's neither valid JSON nor a valid Python
+  literal, so the comma-split fallback previously left the brackets in,
+  producing `["[*]"]` instead of `["*"]`. The fallback now strips one layer
+  of surrounding `[`/`]` before splitting.
+- **Static discovery now recognizes mitol's `get_list_of_str` reader as a
+  `list[str]` field.** Previously unrecognized readers fell through to
+  `Any`, which skips `NoDecode` and the container decoder entirely — the
+  field's env value (e.g. `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`)
+  was stored as the raw, undecoded string instead of a parsed list.
+- **`check_aqueduct_settings` no longer flags Django/third-party
+  runtime-injected dict keys as parity divergences.** `legacy_values` is
+  read from `settings.X` after Django has fully initialized, so a dict
+  setting can carry keys neither the app nor the generator ever wrote —
+  `ConnectionHandler.ensure_defaults` adds `ATOMIC_REQUESTS`/`AUTOCOMMIT`/
+  `TEST`/`TIME_ZONE` to every `DATABASES` entry, and django-health-check's
+  `AppConfig.ready()` adds `DISK_USAGE_MAX`/`MEMORY_MIN`/... to
+  `HEALTH_CHECK` — while the model's raw `model_dump()` never had a chance
+  to produce them. `compare()` now does a one-way subset comparison for
+  dict-valued settings (recursively): every model key/value must appear in
+  the legacy dict, but the legacy dict may carry extra keys. A model key
+  missing from legacy, or a shared key with a different value, is still
+  flagged. Confirmed across all 5 app integrations, each of which had to
+  hand-list these keys in `parity_ignore`.
+
 ## [0.8.1]
 
 ### Fixed

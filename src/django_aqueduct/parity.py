@@ -82,6 +82,16 @@ def compare(
     the migration intentionally made required) are recorded as ignored rather
     than flagged.
 
+    A dict-valued setting is compared with :func:`_dict_subset_matches`
+    rather than strict equality: *legacy_values* is typically read from
+    ``settings.X`` after Django has fully initialized, so it can carry keys
+    Django or a third-party app injected at runtime (``DATABASES`` entries
+    gaining ``ATOMIC_REQUESTS``/``TEST``/etc., ``HEALTH_CHECK`` gaining
+    ``DISK_USAGE_MAX``/etc.) that the model's raw ``model_dump()`` never had
+    a chance to produce. Those extra legacy-only keys are not flagged; a
+    model key missing from legacy, or a shared key with a different value,
+    still is.
+
     Args:
         model_values: The model's resolved settings (e.g. ``model_dump()``).
         legacy_values: The legacy module's UPPERCASE settings.
@@ -119,10 +129,39 @@ def compare(
         # int (1 == True) does not slip through as "equal".
         if type(n_m) is not type(n_l):
             report.divergences.append(Divergence(name, m_val, l_val, "type"))
+        elif isinstance(n_m, dict):
+            if not _dict_subset_matches(n_m, n_l):
+                report.divergences.append(Divergence(name, m_val, l_val, "value"))
         elif n_m != n_l:
             report.divergences.append(Divergence(name, m_val, l_val, "value"))
 
     return report
+
+
+def _dict_subset_matches(model_val: Any, legacy_val: Any) -> bool:
+    """One-way dict comparison: every key/value in *model_val* must be in *legacy_val*.
+
+    *legacy_val* may carry extra keys the model doesn't. ``legacy_values`` is
+    read from ``settings.X`` *after* Django has finished initializing — by
+    which point Django itself (``ConnectionHandler.
+    ensure_defaults`` adding ``ATOMIC_REQUESTS``/``AUTOCOMMIT``/``TEST``/
+    ``TIME_ZONE`` to each ``DATABASES`` entry) and third-party
+    ``AppConfig.ready()`` hooks (django-health-check injecting
+    ``DISK_USAGE_MAX``/``MEMORY_MIN``/... into ``HEALTH_CHECK``) have already
+    mutated it, while ``model_values`` is the model's raw, un-augmented
+    ``model_dump()``. Comparing those two dicts key-for-key would flag every
+    runtime-injected key as a divergence on every run. A model key missing
+    from legacy, or present in both with a different value, is still a real
+    divergence.
+    """
+    if not isinstance(model_val, dict):
+        return bool(model_val == legacy_val)
+    if not isinstance(legacy_val, dict):
+        return False
+    return all(
+        key in legacy_val and _dict_subset_matches(sub, legacy_val[key])
+        for key, sub in model_val.items()
+    )
 
 
 def _normalize(value: Any) -> Any:

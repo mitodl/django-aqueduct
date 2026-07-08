@@ -213,6 +213,21 @@ class Command(BaseCommand):
             ),
         )
         parser.add_argument(
+            "--enrich-url-types",
+            action="store_true",
+            default=None,
+            help=(
+                "Promote str fields to pydantic.AnyUrl: a field whose static "
+                "literal default actually validates as an absolute URL, or "
+                "(absent a literal value to check) whose name ends in "
+                "_URL/_URI and isn't a known Django relative-URL setting "
+                "(STATIC_URL, LOGIN_URL, etc). Paired with a field_serializer "
+                "so the dumped value stays str. Static-only; opt-in because "
+                "the name heuristic can still promote a required field whose "
+                "real env value turns out to be relative."
+            ),
+        )
+        parser.add_argument(
             "--enrich-runtime",
             action="store_true",
             default=False,
@@ -348,11 +363,15 @@ class Command(BaseCommand):
 
         literal_max_values: int | None = options.get("literal_max_values")  # type: ignore[assignment]
 
-        from django_aqueduct.discovery.enrich import (  # noqa: PLC0415
-            apply_url_type_hints,
-        )
+        enrich_url_types = options.get("enrich_url_types")
+        if enrich_url_types is None:
+            enrich_url_types = cfg.enrich_url_types
+        if enrich_url_types:
+            from django_aqueduct.discovery.enrich import (  # noqa: PLC0415
+                apply_url_type_hints,
+            )
 
-        apply_url_type_hints(fields)
+            apply_url_type_hints(fields)
 
         dict_enrichment: dict[str, tuple[str, list[Any]]] = {}
         if options.get("enrich_runtime"):

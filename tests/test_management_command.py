@@ -45,8 +45,33 @@ def test_static_discovery_recovers_aliases_and_required(
     assert "# >>> aqueduct:generated:fields" in out
     # Env alias + required-ness recovered from source (the old engine lost these).
     assert 'validation_alias=AliasChoices("APP_BASE_URL")' in out
-    # Name ends with _URL -> auto-promoted to AnyUrl (static, unconditional hint).
-    assert "APP_BASE_URL: AnyUrl = Field(\n        ...," in out
+    # URL-type promotion is opt-in (--enrich-url-types) -- not applied here.
+    assert (
+        'APP_BASE_URL: str = Field(..., validation_alias=AliasChoices("APP_BASE_URL"))'
+        in out
+    )
+
+
+def test_enrich_url_types_promotes_and_serializes(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--enrich-url-types promotes str-typed fields and adds a field_serializer."""
+    call_command(
+        "generate_aqueduct_settings",
+        modules="v2_fixture_settings",
+        enrich_url_types=True,
+    )
+    out = capsys.readouterr().out
+    ast.parse(out)
+    # No literal default to check -> name hint promotes it (not a known
+    # Django relative-URL setting).
+    assert (
+        "APP_BASE_URL: AnyUrl = Field(\n"
+        '        ..., validation_alias=AliasChoices("APP_BASE_URL")\n'
+        "    )"
+    ) in out
+    assert '@field_serializer("APP_BASE_URL", when_used="always")' in out
+    assert "def _aqueduct_serialize_url_fields(self, value: object) -> object:" in out
 
 
 def test_single_module_has_no_group_header(

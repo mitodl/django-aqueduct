@@ -25,13 +25,15 @@ Refinements produced:
   sites) is promoted to ``Literal[...]``, flagged ``needs_refinement`` so a
   human confirms the set is actually exhaustive before trusting it in
   production.
-* **URL-shaped string (``AnyUrl``)** — a ``str`` field whose name looks like
-  a URL (``*_URL``/``*_URI``) or whose observed value(s) parse as one (a
-  real scheme *and* netloc) is promoted to ``pydantic.AnyUrl``, flagged
+* **URL-shaped string (``AnyUrl``)** — a ``str`` field whose static default
+  actually validates as an absolute ``pydantic.AnyUrl``, or (absent a
+  concrete default to check) whose name looks like a URL (``*_URL``/
+  ``*_URI``, minus a denylist of Django settings that are conventionally
+  relative), is promoted to ``pydantic.AnyUrl``, flagged
   ``needs_refinement`` (a human should confirm ``AnyUrl`` vs. ``HttpUrl`` vs.
-  a custom-scheme validator). Unlike the other refinements this one also
-  runs unconditionally from just the field's own name/static default — no
-  live import or repo scan required — see :func:`apply_url_type_hints`.
+  a custom-scheme validator) and paired with a ``field_serializer`` so the
+  dumped value stays ``str``. Static and opt-in via ``--enrich-url-types``
+  — see :func:`apply_url_type_hints`.
 * **Numeric range (``Constraints``)** — usage-site range comparisons
   (``if not (0 < TIMEOUT <= 3600): raise ...``) become ``Field(gt=, ge=,
   lt=, le=)`` bounds, rendered with an explicit review comment (see
@@ -47,8 +49,9 @@ variable-name heuristic it uses has a real false-positive rate.
 
 from __future__ import annotations
 
-import urllib.parse
 from typing import Any
+
+from pydantic import AnyUrl, TypeAdapter, ValidationError
 
 from django_aqueduct.discovery.ir import (
     Constraints,
@@ -74,6 +77,28 @@ _ANY_URL_TYPE_REF = TypeRef(
     needs_refinement=True,
 )
 
+_ANY_URL_ADAPTER: TypeAdapter[AnyUrl] = TypeAdapter(AnyUrl)
+
+# Django settings that are named `*_URL`/`*_URI` by convention but hold a
+# relative path or URL-resolver name, never an absolute URL — promoting
+# these to `AnyUrl` from the name alone is exactly the 0.8.0 regression
+# (STATIC_URL='/static/', LOGIN_URL='login' both fail `AnyUrl` validation
+# and crash model instantiation). Only consulted when there's no concrete
+# default to validate against instead (see `apply_url_type_hints`).
+_DJANGO_RELATIVE_URL_NAMES = frozenset(
+    {
+        "STATIC_URL",
+        "MEDIA_URL",
+        "LOGIN_URL",
+        "LOGIN_REDIRECT_URL",
+        "LOGOUT_REDIRECT_URL",
+        "ACCOUNT_LOGIN_REDIRECT_URL",
+        "ACCOUNT_LOGOUT_REDIRECT_URL",
+        "ACCOUNT_SIGNUP_REDIRECT_URL",
+        "FORCE_SCRIPT_NAME",
+    }
+)
+
 
 def _render_scalar(v: str | int | float | bool | None) -> str:
     return render_str_literal(v) if isinstance(v, str) else repr(v)
@@ -91,17 +116,25 @@ def _literal_type_ref(values: _ScalarSet) -> TypeRef:
 
 
 def _looks_like_url_name(name: str) -> bool:
+    if name in _DJANGO_RELATIVE_URL_NAMES:
+        return False
     return name in ("URL", "URI") or name.endswith(("_URL", "_URI"))
 
 
 def _looks_like_url_value(value: object) -> bool:
+    """Return True only if *value* actually validates as a ``pydantic.AnyUrl``.
+
+    Ground truth, not a lookalike heuristic — a relative path, a URL-resolver
+    name, or an empty string (``STATIC_URL='/static/'``, ``LOGIN_URL='login'``,
+    ``''``) all fail here, which is what stops those from ever being promoted.
+    """
     if not isinstance(value, str):
         return False
     try:
-        parsed = urllib.parse.urlparse(value)
-    except ValueError:
+        _ANY_URL_ADAPTER.validate_python(value)
+    except ValidationError:
         return False
-    return bool(parsed.scheme) and bool(parsed.netloc)
+    return True
 
 
 def _as_url_type(field_type: TypeRef) -> TypeRef:
@@ -116,19 +149,29 @@ def _as_url_type(field_type: TypeRef) -> TypeRef:
 def apply_url_type_hints(fields: list[SettingField]) -> None:
     """Refine plain ``str`` fields to ``AnyUrl`` from name/default-value alone.
 
-    Static and zero-risk (only inspects a field's own name and its already
-    statically-discovered literal default) — always applied, no flag
-    required, unlike the runtime/usage passes below.
+    Static (only inspects a field's own name and its already
+    statically-discovered literal default) but opt-in via
+    ``--enrich-url-types`` — unlike the earlier unconditional behavior, a
+    field with a concrete literal default is promoted *only* if that value
+    actually validates as an absolute ``AnyUrl``; the name-suffix heuristic
+    (minus :data:`_DJANGO_RELATIVE_URL_NAMES`) is a fallback used only when
+    there's no literal value to check (``REQUIRED``/``DERIVED``/``EXPR``
+    defaults, or a literal ``None``). This is what stops Django's relative
+    ``*_URL`` settings (``STATIC_URL='/static/'``, ``LOGIN_URL='login'``,
+    an empty ``API_BASE_URL``) from being promoted into a type their own
+    default can't satisfy.
     """
     for f in fields:
         if f.type.base != "str" or f.type.needs_refinement:
             continue
-        name_hint = _looks_like_url_name(f.name)
-        value_hint = (
+        has_literal_value = (
             f.default.strategy is DefaultStrategy.LITERAL
-            and _looks_like_url_value(f.default.literal)
+            and f.default.literal is not None
         )
-        if name_hint or value_hint:
+        if has_literal_value:
+            if _looks_like_url_value(f.default.literal):
+                f.type = _as_url_type(f.type)
+        elif _looks_like_url_name(f.name):
             f.type = _as_url_type(f.type)
 
 

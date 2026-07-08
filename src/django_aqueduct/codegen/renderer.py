@@ -559,7 +559,11 @@ class ModelRenderer:
         ``_render_field``), these validators receive the raw string and try
         ``json.loads`` first (so JSON inputs keep working exactly as
         before), then ``ast.literal_eval`` (Python-literal strings, e.g.
-        single-quoted), then — lists only — a final comma-split fallback.
+        single-quoted), then — lists only — a final comma-split fallback that
+        first strips one layer of surrounding ``[``/``]`` (neither JSON nor
+        ``literal_eval`` parses a bare ``[*]``, so without stripping it the
+        wildcard ends up in the list as the literal string ``"[*]"`` instead
+        of ``"*"``).
         """
         lines: list[str] = []
         if list_fields:
@@ -584,7 +588,16 @@ class ModelRenderer:
             lines.append("                parsed = None")
             lines.append("        if isinstance(parsed, list):")
             lines.append("            return parsed")
-            lines.append('        return [item.strip() for item in value.split(",")]')
+            lines.append("        stripped = value.strip()")
+            lines.append(
+                '        if stripped.startswith("[") and stripped.endswith("]"):'
+            )
+            lines.append("            stripped = stripped[1:-1].strip()")
+            lines.append("        if not stripped:")
+            lines.append("            return []")
+            lines.append(
+                '        return [item.strip() for item in stripped.split(",")]'
+            )
             if dict_fields:
                 lines.append("")
         if dict_fields:
@@ -607,6 +620,24 @@ class ModelRenderer:
             lines.append("            return parsed")
             lines.append("        return ast.literal_eval(value)")
         return lines
+
+    def _render_url_serializers(self, url_fields: list[str]) -> list[str]:
+        """Render a ``field_serializer`` that dumps ``AnyUrl`` fields back to ``str``.
+
+        Without this, ``model_dump()`` emits ``pydantic.Url`` objects for any
+        field promoted to ``AnyUrl`` (see
+        :func:`~django_aqueduct.discovery.enrich.apply_url_type_hints`),
+        breaking downstream consumers (Django URL resolution, redis/celery/
+        requests clients, ``urljoin``/``rstrip`` string ops) that expect
+        ``str`` — exactly the parity divergence class ``AnyUrl`` promotion
+        must not introduce.
+        """
+        names = [render_str_literal(name) for name in url_fields]
+        return [
+            _wrap_call("    @field_serializer", [*names, 'when_used="always"']),
+            "    def _aqueduct_serialize_url_fields(self, value: object) -> object:",
+            "        return str(value) if value is not None else None",
+        ]
 
     def _enrich_dicts(self) -> tuple[dict[str, str], list[TypedDictDef]]:
         """Return ``(enriched_annotations, typeddict_defs)`` for dict-valued fields.
@@ -661,7 +692,9 @@ class ModelRenderer:
             defs.extend(new_defs)
         return enriched, defs
 
-    def _all_imports(self, *, has_containers: bool = False) -> frozenset[ImportSpec]:
+    def _all_imports(
+        self, *, has_containers: bool = False, has_url_fields: bool = False
+    ) -> frozenset[ImportSpec]:
         specs: set[ImportSpec] = set(_BASE_IMPORTS)
         if any(f.env_aliases for f in self._fields):
             specs.add(ImportSpec("pydantic", "AliasChoices"))
@@ -671,6 +704,8 @@ class ModelRenderer:
             specs.add(ImportSpec("typing", "Annotated"))
             specs.add(ImportSpec("pydantic", "field_validator"))
             specs.add(ImportSpec("pydantic_settings", "NoDecode"))
+        if has_url_fields:
+            specs.add(ImportSpec("pydantic", "field_serializer"))
         for f in self._fields:
             specs |= f.all_imports()
         return frozenset(specs)
@@ -680,6 +715,8 @@ class ModelRenderer:
         enriched, typeddict_defs = self._enrich_dicts()
         list_fields, dict_fields = self._container_fields(enriched)
         no_decode_names = set(list_fields) | set(dict_fields)
+
+        url_fields = sorted(f.name for f in self._fields if f.type.base == "AnyUrl")
 
         field_lines = self._render_grouped_fields(enriched, no_decode_names)
         container_lines = (
@@ -693,7 +730,12 @@ class ModelRenderer:
             "\n\n\n".join(typeddict_blocks).split("\n") if typeddict_blocks else []
         )
 
-        specs = set(self._all_imports(has_containers=bool(list_fields or dict_fields)))
+        specs = set(
+            self._all_imports(
+                has_containers=bool(list_fields or dict_fields),
+                has_url_fields=bool(url_fields),
+            )
+        )
         # Check the actual annotations (not the rendered lines) for `Any` — a
         # rendered line can also contain "Any" inside a description/comment
         # (e.g. `description="Can be Any value"`), which would otherwise
@@ -751,6 +793,12 @@ class ModelRenderer:
             lines.extend(container_lines)
             lines.append("")  # ruff-format wants a blank line after a method body
             lines.append(region_close("generated", "container_decoders"))
+            lines.append("")
+        if url_fields:
+            lines.append(region_open("generated", "url_serializers"))
+            lines.extend(self._render_url_serializers(url_fields))
+            lines.append("")  # ruff-format wants a blank line after a method body
+            lines.append(region_close("generated", "url_serializers"))
             lines.append("")
         lines.append(region_open("preserved", "validators"))
         lines.append("    # Add @model_validator / @field_validator methods here.")

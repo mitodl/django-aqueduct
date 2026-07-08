@@ -42,6 +42,12 @@ REQUIRED_WITH_DEFAULT = env.get_string(  # noqa: F821
     "REQUIRED_WITH_DEFAULT", default="fallback", required=True
 )
 
+# mitol EnvParser's get_list_of_str reader must be typed list[str] (and get
+# NoDecode + the container decoder), not fall through to Any.
+CORS_ALLOWED_ORIGINS = env.get_list_of_str(  # noqa: F821
+    "CORS_ALLOWED_ORIGINS", default=[]
+)
+
 # Real description above a standalone pragma line.
 # noqa: E501
 PRAGMA_ABOVE = 1

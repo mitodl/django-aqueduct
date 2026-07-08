@@ -100,6 +100,34 @@ def test_anyurl_type_renders_with_import():
     ast.parse(src)
 
 
+def test_anyurl_field_gets_str_serializer():
+    """An AnyUrl-typed field is paired with a field_serializer dumping str.
+
+    Without this, model_dump() would emit a pydantic.Url object instead of
+    str for a field promoted by apply_url_type_hints, breaking parity with
+    the legacy str-typed setting.
+    """
+    f = SettingField(
+        name="API_BASE_URL",
+        type=TypeRef("AnyUrl", imports=frozenset({ImportSpec("pydantic", "AnyUrl")})),
+        default=Default.literal_(None),
+        provenance=Provenance(source_module="m"),
+    )
+    src = ModelRenderer([f]).render()
+    assert "from pydantic import AnyUrl, Field, field_serializer" in src
+    assert '@field_serializer("API_BASE_URL", when_used="always")' in src
+    assert "def _aqueduct_serialize_url_fields(self, value: object) -> object:" in src
+    assert "# >>> aqueduct:generated:url_serializers" in src
+    ast.parse(src)
+
+
+def test_non_url_field_has_no_serializer_region():
+    f = _field("SITE_NAME", base="str", default=Default.literal_("My App"))
+    src = ModelRenderer([f]).render()
+    assert "field_serializer" not in src
+    assert "url_serializers" not in src
+
+
 def test_constraints_render_as_field_kwargs():
     f = _field(
         "TIMEOUT",
