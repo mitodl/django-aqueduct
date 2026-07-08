@@ -44,9 +44,9 @@ def test_static_discovery_recovers_aliases_and_required(
     assert "class AqueductSettings(BaseSettings):" in out
     assert "# >>> aqueduct:generated:fields" in out
     # Env alias + required-ness recovered from source (the old engine lost these).
-    assert "validation_alias=AliasChoices('APP_BASE_URL')" in out
+    assert 'validation_alias=AliasChoices("APP_BASE_URL")' in out
     # Name ends with _URL -> auto-promoted to AnyUrl (static, unconditional hint).
-    assert "APP_BASE_URL: AnyUrl = Field(..." in out
+    assert "APP_BASE_URL: AnyUrl = Field(\n        ...," in out
 
 
 def test_single_module_has_no_group_header(
@@ -193,8 +193,8 @@ def test_python_format_is_default(capsys: _Capsys) -> None:
     """Without --format the command defaults to Python output."""
     call_command("generate_aqueduct_settings", modules="fixture_settings")
     captured = capsys.readouterr()
-    # Python output starts with the noqa directive and comment block, not JSON
-    assert captured.out.startswith("# ruff: noqa\n# This file was generated")
+    # Python output starts with the generated-file comment block, not JSON
+    assert captured.out.startswith("# This file was generated")
 
 
 def test_multiple_modules(capsys: _Capsys) -> None:
@@ -419,7 +419,7 @@ def test_enrich_runtime_promotes_literal_from_env_files(
     )
     out = capsys.readouterr().out
     ast.parse(out)
-    assert "ENVIRONMENT: Literal['production', 'staging']" in out
+    assert 'ENVIRONMENT: Literal["production", "staging"]' in out
 
 
 def test_enrich_runtime_refines_dict_shape(
@@ -482,8 +482,8 @@ def test_enrich_usage_promotes_literal_and_range(tmp_path, capsys: _Capsys) -> N
     )
     out = capsys.readouterr().out
     ast.parse(out)
-    assert "LOG_LEVEL: Literal['DEBUG', 'INFO']" in out
-    assert "MAX_CONNECTIONS: int = Field(default=100, gt=0, le=1000)" in out
+    assert 'LOG_LEVEL: Literal["DEBUG", "INFO"]' in out
+    assert "MAX_CONNECTIONS: int = Field(\n        default=100, gt=0, le=1000" in out
     assert "usage-mined bound(s)" in out
 
 
@@ -503,4 +503,4 @@ def test_literal_max_values_flag_lowers_threshold(tmp_path, capsys: _Capsys) -> 
     )
     out = capsys.readouterr().out
     assert "LOG_LEVEL: Literal[" not in out
-    assert "LOG_LEVEL: str = Field(default='INFO'" in out
+    assert 'LOG_LEVEL: str = Field(\n        default="INFO"' in out

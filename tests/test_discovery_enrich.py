@@ -69,7 +69,7 @@ def test_runtime_scalar_literal_promotion():
         {"ENVIRONMENT": "dev"},
     ]
     apply_runtime_enrichment([f], samples)
-    assert f.type.base == "Literal['dev', 'staging']"
+    assert f.type.base == 'Literal["dev", "staging"]'
     assert f.type.needs_refinement is True
 
 
@@ -114,7 +114,7 @@ def test_runtime_only_name_gets_literal_type_when_evidence_supports_it():
     samples = [{"MYSTERY": "a"}, {"MYSTERY": "b"}]
     apply_runtime_enrichment(fields, samples)
     mystery = fields[0]
-    assert mystery.type.base == "Literal['a', 'b']"
+    assert mystery.type.base == 'Literal["a", "b"]'
 
 
 # ------------------------------------------------------------------ #
@@ -143,7 +143,7 @@ def test_runtime_url_shaped_strings_promote_to_anyurl():
 def test_usage_enrichment_promotes_literal():
     f = _field("LOG_LEVEL", base="str")
     apply_usage_enrichment([f], {"LOG_LEVEL": {"DEBUG", "INFO", "WARNING"}})
-    assert f.type.base == "Literal['DEBUG', 'INFO', 'WARNING']"
+    assert f.type.base == 'Literal["DEBUG", "INFO", "WARNING"]'
 
 
 def test_usage_enrichment_ignores_unknown_field():

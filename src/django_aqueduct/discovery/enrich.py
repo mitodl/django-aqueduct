@@ -59,6 +59,7 @@ from django_aqueduct.discovery.ir import (
     Provenance,
     SettingField,
     TypeRef,
+    render_str_literal,
 )
 from django_aqueduct.discovery.usage import RangeEvidence
 
@@ -74,10 +75,14 @@ _ANY_URL_TYPE_REF = TypeRef(
 )
 
 
+def _render_scalar(v: str | int | float | bool | None) -> str:
+    return render_str_literal(v) if isinstance(v, str) else repr(v)
+
+
 def _literal_type_ref(values: _ScalarSet) -> TypeRef:
     """Build a deterministically-ordered ``needs_refinement`` ``Literal[...]``."""
     ordered = sorted(values, key=lambda v: (type(v).__name__, repr(v)))
-    body = ", ".join(repr(v) for v in ordered)
+    body = ", ".join(_render_scalar(v) for v in ordered)
     return TypeRef(
         base=f"Literal[{body}]",
         imports=frozenset({ImportSpec("typing", "Literal")}),
