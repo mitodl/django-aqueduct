@@ -559,7 +559,11 @@ class ModelRenderer:
         ``_render_field``), these validators receive the raw string and try
         ``json.loads`` first (so JSON inputs keep working exactly as
         before), then ``ast.literal_eval`` (Python-literal strings, e.g.
-        single-quoted), then — lists only — a final comma-split fallback.
+        single-quoted), then — lists only — a final comma-split fallback that
+        first strips one layer of surrounding ``[``/``]`` (neither JSON nor
+        ``literal_eval`` parses a bare ``[*]``, so without stripping it the
+        wildcard ends up in the list as the literal string ``"[*]"`` instead
+        of ``"*"``).
         """
         lines: list[str] = []
         if list_fields:
@@ -584,7 +588,16 @@ class ModelRenderer:
             lines.append("                parsed = None")
             lines.append("        if isinstance(parsed, list):")
             lines.append("            return parsed")
-            lines.append('        return [item.strip() for item in value.split(",")]')
+            lines.append("        stripped = value.strip()")
+            lines.append(
+                '        if stripped.startswith("[") and stripped.endswith("]"):'
+            )
+            lines.append("            stripped = stripped[1:-1].strip()")
+            lines.append("        if not stripped:")
+            lines.append("            return []")
+            lines.append(
+                '        return [item.strip() for item in stripped.split(",")]'
+            )
             if dict_fields:
                 lines.append("")
         if dict_fields:

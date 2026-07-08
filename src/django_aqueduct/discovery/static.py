@@ -64,6 +64,7 @@ _READER_TYPES: dict[str, str] = {
     "get_float": "float",
     "get_list_literal": "list[Any]",
     "get_delimited_list": "list[str]",
+    "get_list_of_str": "list[str]",
     # django-environ style: env.str(...), env.bool(...), env.int(...)
     "str": "str",
     "bool": "bool",

@@ -94,6 +94,45 @@ def test_list_tuple_value_difference_still_caught() -> None:
     assert [(d.name, d.kind) for d in report.divergences] == [("HOSTS", "value")]
 
 
+def test_dict_extra_legacy_keys_not_flagged() -> None:
+    # Django's ConnectionHandler.ensure_defaults injects ATOMIC_REQUESTS/
+    # AUTOCOMMIT/TEST/TIME_ZONE into each DATABASES entry at runtime; the
+    # model's raw model_dump() never had a chance to produce them.
+    model = {"DATABASES": {"default": {"ENGINE": "postgres", "NAME": "db"}}}
+    legacy = {
+        "DATABASES": {
+            "default": {
+                "ENGINE": "postgres",
+                "NAME": "db",
+                "ATOMIC_REQUESTS": False,
+                "AUTOCOMMIT": True,
+                "TIME_ZONE": None,
+                "TEST": {"NAME": None},
+            }
+        }
+    }
+    report = compare(model, legacy)
+    assert report.in_sync is True
+
+
+def test_dict_missing_model_key_still_flagged() -> None:
+    # A model key absent from legacy (not runtime augmentation, an actual
+    # gap) must still be reported.
+    model = {"HEALTH_CHECK": {"SUBSETS": {"default": ["default"]}}}
+    legacy = {"HEALTH_CHECK": {"DISK_USAGE_MAX": 90}}
+    report = compare(model, legacy)
+    assert [(d.name, d.kind) for d in report.divergences] == [("HEALTH_CHECK", "value")]
+
+
+def test_dict_shared_key_value_mismatch_still_flagged() -> None:
+    model = {"DATABASES": {"default": {"ENGINE": "postgres", "NAME": "db"}}}
+    legacy = {
+        "DATABASES": {"default": {"ENGINE": "postgres", "NAME": "other-db", "TEST": {}}}
+    }
+    report = compare(model, legacy)
+    assert [(d.name, d.kind) for d in report.divergences] == [("DATABASES", "value")]
+
+
 def test_command_empty_model_class_rejected() -> None:
     for bad in ("mod:", ":Class"):
         with pytest.raises(CommandError, match="module.path:ClassName"):

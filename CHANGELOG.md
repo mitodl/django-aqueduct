@@ -31,6 +31,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of a `pydantic.Url` object — the type/value drift that broke
   downstream `urljoin`/`rstrip` string ops and redis/celery/requests clients
   in every app that kept an `AnyUrl` promotion.
+- **The generated list-field decoder now handles a bare `[*]` wildcard.**
+  mit-learn receives `ALLOWED_HOSTS=[*]` from a stray `.env` file (pulled in
+  by litellm's `load_dotenv()`); it's neither valid JSON nor a valid Python
+  literal, so the comma-split fallback previously left the brackets in,
+  producing `["[*]"]` instead of `["*"]`. The fallback now strips one layer
+  of surrounding `[`/`]` before splitting.
+- **Static discovery now recognizes mitol's `get_list_of_str` reader as a
+  `list[str]` field.** Previously unrecognized readers fell through to
+  `Any`, which skips `NoDecode` and the container decoder entirely — the
+  field's env value (e.g. `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`)
+  was stored as the raw, undecoded string instead of a parsed list.
+- **`check_aqueduct_settings` no longer flags Django/third-party
+  runtime-injected dict keys as parity divergences.** `legacy_values` is
+  read from `settings.X` after Django has fully initialized, so a dict
+  setting can carry keys neither the app nor the generator ever wrote —
+  `ConnectionHandler.ensure_defaults` adds `ATOMIC_REQUESTS`/`AUTOCOMMIT`/
+  `TEST`/`TIME_ZONE` to every `DATABASES` entry, and django-health-check's
+  `AppConfig.ready()` adds `DISK_USAGE_MAX`/`MEMORY_MIN`/... to
+  `HEALTH_CHECK` — while the model's raw `model_dump()` never had a chance
+  to produce them. `compare()` now does a one-way subset comparison for
+  dict-valued settings (recursively): every model key/value must appear in
+  the legacy dict, but the legacy dict may carry extra keys. A model key
+  missing from legacy, or a shared key with a different value, is still
+  flagged. Confirmed across all 5 app integrations, each of which had to
+  hand-list these keys in `parity_ignore`.
 
 ## [0.8.1]
 

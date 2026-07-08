@@ -108,6 +108,15 @@ def test_explicit_required_wins_over_default(fields):
     assert f.env_aliases == ("REQUIRED_WITH_DEFAULT",)
 
 
+def test_get_list_of_str_reader_typed_as_list(fields):
+    # mitol's get_list_of_str(...) must be recognised as a list[str] reader,
+    # not fall through to Any (which would skip NoDecode/the container
+    # decoder and store the raw env string verbatim).
+    f = _by_name(fields)["CORS_ALLOWED_ORIGINS"]
+    assert f.type.render() == "list[str]"
+    assert f.env_aliases == ("CORS_ALLOWED_ORIGINS",)
+
+
 def test_leading_comment_uses_statement_line(tmp_path):
     # A parenthesized value starts on a later line than the assignment, so
     # anchoring on the statement line (not value.lineno) is required to find
@@ -385,6 +394,39 @@ def test_list_container_json_with_non_python_tokens_decodes(tmp_path, monkeypatc
     monkeypatch.setenv("FEATURE_FLAGS", "[true, false, null]")
     inst = module.AqueductSettings()
     assert inst.FEATURE_FLAGS == [True, False, None]
+
+
+def test_list_container_bare_wildcard_bracket_decodes(tmp_path, monkeypatch):
+    """`[*]` is neither valid JSON nor a valid Python literal.
+
+    Reproduces the mit-learn failure (litellm's stray `.env` sets
+    `ALLOWED_HOSTS=[*]`): without stripping the surrounding brackets before
+    the comma-split fallback, this decodes to the single bogus item
+    `"[*]"` instead of the intended wildcard `"*"`.
+    """
+    import importlib.util
+    import sys
+
+    f = SettingField(
+        name="ALLOWED_HOSTS",
+        type=TypeRef("list[Any]"),
+        default=Default.literal_([], factory=True),
+        provenance=Provenance(source_module="m"),
+    )
+    src = ModelRenderer([f]).render()
+    path = tmp_path / "generated_settings_list_wildcard.py"
+    path.write_text(src, encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location(
+        "generated_settings_list_wildcard", path
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["generated_settings_list_wildcard"] = module
+    spec.loader.exec_module(module)
+
+    monkeypatch.setenv("ALLOWED_HOSTS", "[*]")
+    inst = module.AqueductSettings()
+    assert inst.ALLOWED_HOSTS == ["*"]
 
 
 def test_dict_container_env_value_decodes_without_json(tmp_path, monkeypatch):
