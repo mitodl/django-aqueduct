@@ -25,6 +25,11 @@ Usage examples::
     python manage.py generate_aqueduct_settings \\
         --modules myapp.settings --include-envparser
 
+    # One-time: adopt managed regions in a hand-refined v1-era model, with
+    # zero change to its code (comment-only insertion)
+    python manage.py generate_aqueduct_settings \\
+        --wrap-existing src/myapp/settings_model.py
+
 Regenerating a file *merges* into its managed ``# >>> aqueduct:generated:*``
 regions, leaving hand-written code in ``# >>> aqueduct:preserved:*`` regions
 (and anywhere outside a generated region) untouched. ``--reset`` overwrites the
@@ -175,9 +180,27 @@ class Command(BaseCommand):
                 "hand-written code in preserved regions."
             ),
         )
+        parser.add_argument(
+            "--wrap-existing",
+            type=str,
+            default=None,
+            metavar="PATH",
+            help=(
+                "One-time migration helper: insert aqueduct:generated/preserved "
+                "region markers into an existing hand-refined model file "
+                "(e.g. one produced by the removed v1 engine) in place, without "
+                "changing a single line of code. Ignores every other flag. "
+                "Run this once per app before adopting --check/regeneration."
+            ),
+        )
 
     def handle(self, *args: object, **options: object) -> None:
         """Execute the command."""
+        wrap_existing_path = options.get("wrap_existing")
+        if wrap_existing_path:
+            self._wrap_existing(str(wrap_existing_path), options.get("class_name"))
+            return
+
         from django_aqueduct.config import ConfigError, load_config  # noqa: PLC0415
 
         try:
@@ -374,4 +397,34 @@ class Command(BaseCommand):
             self.stderr.write(diff)
         raise CommandError(
             f"{output_path} is out of date. Re-run without --check to update it."
+        )
+
+    def _wrap_existing(self, path_str: str, class_name: object) -> None:
+        """Insert region markers into an existing hand-refined model in place."""
+        from pathlib import Path  # noqa: PLC0415
+
+        from django_aqueduct.codegen.wrap_existing import (  # noqa: PLC0415
+            WrapExistingError,
+            wrap_existing,
+        )
+
+        path = Path(path_str)
+        if not path.is_file():
+            raise CommandError(f"--wrap-existing: {path_str!r} does not exist.")
+
+        source = path.read_text(encoding="utf-8")
+        try:
+            wrapped = wrap_existing(
+                source, class_name=class_name if isinstance(class_name, str) else None
+            )
+        except (WrapExistingError, SyntaxError) as exc:
+            raise CommandError(f"--wrap-existing: {exc}") from exc
+
+        path.write_text(wrapped, encoding="utf-8")
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Inserted aqueduct region markers into {path_str}. "
+                "Run generate_aqueduct_settings --output "
+                f"{path_str} normally to regenerate going forward."
+            )
         )

@@ -340,3 +340,34 @@ def test_extra_flag(capsys: _Capsys) -> None:
         "generate_aqueduct_settings", modules="v2_fixture_settings", extra="forbid"
     )
     assert 'extra="forbid"' in capsys.readouterr().out
+
+
+def test_wrap_existing_flag(tmp_path: pathlib.Path, capsys: _Capsys) -> None:
+    """--wrap-existing inserts markers in place and ignores other flags."""
+    target = tmp_path / "hand_refined.py"
+    target.write_text(
+        "from pydantic_settings import BaseSettings, SettingsConfigDict\n"
+        "from pydantic import Field\n\n\n"
+        "class AqueductSettings(BaseSettings):\n"
+        '    model_config = SettingsConfigDict(env_prefix="", extra="allow")\n\n'
+        "    DEBUG: bool = Field(default=False)\n\n"
+        "    @property\n"
+        "    def is_prod(self) -> bool:\n"
+        "        return not self.DEBUG\n"
+    )
+    call_command("generate_aqueduct_settings", wrap_existing=str(target))
+    out = capsys.readouterr().out
+    assert "written to" not in out  # not the normal _emit path
+
+    wrapped = target.read_text()
+    assert "# >>> aqueduct:generated:fields" in wrapped
+    assert "# >>> aqueduct:preserved:validators" in wrapped
+    assert "def is_prod" in wrapped
+    ast.parse(wrapped)
+
+
+def test_wrap_existing_missing_file() -> None:
+    from django.core.management.base import CommandError
+
+    with pytest.raises(CommandError, match="does not exist"):
+        call_command("generate_aqueduct_settings", wrap_existing="/no/such/file.py")
