@@ -5,6 +5,63 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0]
+
+Phase C wrap-up: a one-time migration path for hand-refined v1-era models,
+plus optional enrichment passes that recover type information static
+discovery alone can't see.
+
+### Added
+
+- **`--wrap-existing <path>` migration helper.** Inserts
+  `# >>> aqueduct:generated/preserved:*` region markers into an existing
+  hand-refined model (e.g. one produced by the removed v1 engine) as a pure
+  comment-insertion pass — not a single line of code is moved, reformatted,
+  or rewritten, so it changes zero runtime behavior. Lets the five app
+  integration PRs adopt the v2 managed-region merge writer / `--check` drift
+  mode without a `--reset` that would discard hand-written validators and
+  derivations. Refuses to guess (raises a clear error) on already-wrapped
+  files, missing/ambiguous `BaseSettings` classes, or a shape that doesn't
+  look like a v1-generated-and-refined model; only wraps the *leading*
+  contiguous run of imports so an interleaved or later stray import is never
+  silently swallowed into a region that gets overwritten on regen.
+- **`--enrich-runtime` + `--runtime-env-file` (repeatable).** Imports
+  `--modules` once per `.env`-style snapshot to refine what static discovery
+  alone can't: a dict field whose default was never a literal
+  (`DATABASES = dj_database_url.parse(...)`) gets real genson-inferred
+  `TypedDict` shape (now multi-sample — a key present in only *some*
+  snapshots' entries is correctly inferred optional, not required); a scalar
+  field observed to take only a small, stable set of values across snapshots
+  is promoted to `Literal[...]`; a string field whose values look like URLs
+  is promoted to `pydantic.AnyUrl`. A name found via `dir(module)` with no
+  matching static field becomes a new field with the `RUNTIME_ONLY` default
+  strategy — flagged for review, never carrying the observed value. This is
+  the one flag that executes code; every other flag remains static-only.
+- **`--enrich-usage <path>` (repeatable, never executes anything).** A plain
+  AST scan of given files/directories for `settings.X` comparisons in app
+  code: equality/membership checks (`if settings.LOG_LEVEL == "DEBUG":`)
+  promote a field to `Literal[...]`; numeric range checks
+  (`if not (0 < TIMEOUT <= 3600): raise`, in any operand order, including
+  chained comparisons) populate a new `Constraints` IR type rendered as
+  `Field(gt=/ge=/lt=/le=)`. Only ever refines an existing field — a
+  comparison site is evidence someone compared against a name, not proof a
+  real setting assignment exists.
+- **Unconditional URL detection.** A `str` field named `*_URL`/`*_URI`, or
+  whose static literal default parses as a real URL (scheme + netloc), is
+  promoted to `AnyUrl` for free — no flag required, runs on every generation.
+- **`--literal-max-values`** caps how many distinct values a scalar field may
+  have and still be promoted to `Literal[...]` (default 8) — shared by both
+  enrichment passes.
+- `--format jsonschema` reflects all of the above: `Literal[...]` → `enum`,
+  `AnyUrl` → `{"type": "string", "format": "uri"}`, `Constraints` → draft-07's
+  `minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum`.
+
+Every promotion from either enrichment pass is either flagged
+`needs_refinement` (`# TODO: refine type`) or carries an explicit
+`# usage-mined bound(s) — confirm before trusting` comment — both passes may
+only refine a field's type/constraints, never its default, required-ness, or
+env aliases, preserving the safety boundary the v2 rewrite was built around.
+
 ## [0.7.1]
 
 ### Fixed
