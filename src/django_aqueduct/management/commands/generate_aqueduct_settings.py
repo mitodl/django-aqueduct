@@ -30,6 +30,14 @@ Usage examples::
     python manage.py generate_aqueduct_settings \\
         --wrap-existing src/myapp/settings_model.py
 
+    # Optional enrichment: refine dict shapes / closed-value sets / URL
+    # fields by importing the settings module under several env snapshots,
+    # plus mining app code for value/range checks against settings.X
+    python manage.py generate_aqueduct_settings \\
+        --modules myapp.settings \\
+        --enrich-runtime --runtime-env-file .env.dev --runtime-env-file .env.prod \\
+        --enrich-usage src/myapp
+
 Regenerating a file *merges* into its managed ``# >>> aqueduct:generated:*``
 regions, leaving hand-written code in ``# >>> aqueduct:preserved:*`` regions
 (and anywhere outside a generated region) untouched. ``--reset`` overwrites the
@@ -44,9 +52,20 @@ so generation is reproducible::
     output = "src/myapp/settings_model.py"
     include_envparser = true
     extra = "forbid"          # reject un-modeled keys (typo detection)
+
+**A note on ``--enrich-runtime``:** unlike every other flag, it imports the
+target settings module — once per ``--runtime-env-file`` snapshot — which
+executes arbitrary project code. It never authors a field's default,
+required-ness, or env aliases from what it observes (only type shape/
+closed-value-set/URL refinements, which the renderer marks
+``needs_refinement`` for human review); still, only point it at modules and
+env files you trust. ``--enrich-usage`` never executes anything — it's a
+plain AST scan of the given source paths.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from django.core.management.base import BaseCommand, CommandError
 
@@ -193,6 +212,51 @@ class Command(BaseCommand):
                 "Run this once per app before adopting --check/regeneration."
             ),
         )
+        parser.add_argument(
+            "--enrich-runtime",
+            action="store_true",
+            default=False,
+            help=(
+                "Import --modules once per --runtime-env-file snapshot to "
+                "refine dict shapes (genson), closed-value-set fields "
+                "(Literal[...]), and URL-shaped strings (AnyUrl) — never "
+                "field defaults/required-ness/aliases. Executes project code; "
+                "only point it at trusted modules and env files."
+            ),
+        )
+        parser.add_argument(
+            "--runtime-env-file",
+            action="append",
+            default=[],
+            metavar="PATH",
+            help=(
+                "A .env-style KEY=VALUE file overlaid onto os.environ for one "
+                "--enrich-runtime sample. Repeatable; each occurrence is one "
+                "sample. Ignored without --enrich-runtime."
+            ),
+        )
+        parser.add_argument(
+            "--enrich-usage",
+            action="append",
+            default=[],
+            metavar="PATH",
+            help=(
+                "A file or directory to scan (recursively) for settings.X "
+                "comparisons/range checks, promoting closed-value-set fields "
+                "to Literal[...] and range-checked numeric fields to "
+                "Field(gt=/ge=/lt=/le=). Repeatable. Static-only — never "
+                "executes anything."
+            ),
+        )
+        parser.add_argument(
+            "--literal-max-values",
+            type=int,
+            default=None,
+            help=(
+                "Max distinct observed/compared values for a scalar field to "
+                "be promoted to Literal[...] (default: 8)."
+            ),
+        )
 
     def handle(self, *args: object, **options: object) -> None:
         """Execute the command."""
@@ -282,12 +346,36 @@ class Command(BaseCommand):
         if attribute_packages:
             self._attribute(fields, cfg.attribution_rules)
 
+        literal_max_values: int | None = options.get("literal_max_values")  # type: ignore[assignment]
+
+        from django_aqueduct.discovery.enrich import (  # noqa: PLC0415
+            apply_url_type_hints,
+        )
+
+        apply_url_type_hints(fields)
+
+        dict_enrichment: dict[str, tuple[str, list[Any]]] = {}
+        if options.get("enrich_runtime"):
+            env_file_paths: list[str] = list(options.get("runtime_env_file") or [])  # type: ignore[call-overload]
+            dict_enrichment |= self._enrich_runtime(
+                fields, module_paths, env_file_paths, literal_max_values
+            )
+
+        usage_paths: list[str] = list(options.get("enrich_usage") or [])  # type: ignore[call-overload]
+        if usage_paths:
+            self._enrich_usage(fields, usage_paths, literal_max_values)
+
         if output_format == "jsonschema":
             import json  # noqa: PLC0415
 
             output = json.dumps(SchemaGenerator(fields).generate(), indent=2)
         else:
-            output = ModelRenderer(fields, class_name=class_name, extra=extra).render()
+            output = ModelRenderer(
+                fields,
+                class_name=class_name,
+                extra=extra,
+                dict_enrichment=dict_enrichment or None,
+            ).render()
 
         if check:
             self._check(output, output_path, output_format)
@@ -320,6 +408,82 @@ class Command(BaseCommand):
         attribution = attributor.attribute(fields)
         for f in fields:
             f.owning_package = attribution.get(f.name, "project")
+
+    @staticmethod
+    def _enrich_runtime(
+        fields: list[SettingField],
+        module_paths: list[str],
+        env_file_paths: list[str],
+        literal_max_values: int | None,
+    ) -> dict[str, tuple[str, list[Any]]]:
+        """Sample *module_paths* under each ``--runtime-env-file`` and merge in.
+
+        Returns the ``dict_enrichment`` overlay for :class:`ModelRenderer`.
+        """
+        from pathlib import Path  # noqa: PLC0415
+
+        from django_aqueduct.discovery.enrich import (  # noqa: PLC0415
+            apply_runtime_enrichment,
+        )
+        from django_aqueduct.discovery.runtime import (  # noqa: PLC0415
+            RuntimeSamplingError,
+            parse_env_file,
+            sample_module_values,
+        )
+
+        if not module_paths:
+            raise CommandError("--enrich-runtime requires --modules.")
+
+        snapshots = []
+        for path_str in env_file_paths:
+            path = Path(path_str)
+            try:
+                snapshots.append(parse_env_file(path.read_text(encoding="utf-8")))
+            except OSError as exc:
+                raise CommandError(
+                    f"--runtime-env-file: cannot read {path_str!r}: {exc}"
+                ) from exc
+        if not snapshots:
+            # No env files given: sample once under the current process env,
+            # exactly the flags/environment this invocation is already using.
+            snapshots = [{}]
+
+        try:
+            samples = sample_module_values(module_paths, snapshots)
+        except RuntimeSamplingError as exc:
+            raise CommandError(f"--enrich-runtime: {exc}") from exc
+
+        kwargs = (
+            {"literal_max_values": literal_max_values}
+            if literal_max_values is not None
+            else {}
+        )
+        return apply_runtime_enrichment(fields, samples, **kwargs)
+
+    @staticmethod
+    def _enrich_usage(
+        fields: list[SettingField],
+        scan_paths: list[str],
+        literal_max_values: int | None,
+    ) -> None:
+        """Scan *scan_paths* for settings.X comparisons/range checks and merge in."""
+        from django_aqueduct.discovery.enrich import (  # noqa: PLC0415
+            apply_usage_enrichment,
+            apply_usage_range_enrichment,
+        )
+        from django_aqueduct.discovery.usage import (  # noqa: PLC0415
+            find_usage_candidates,
+        )
+
+        names = [f.name for f in fields]
+        literals, ranges = find_usage_candidates(scan_paths, names)
+        kwargs = (
+            {"literal_max_values": literal_max_values}
+            if literal_max_values is not None
+            else {}
+        )
+        apply_usage_enrichment(fields, literals, **kwargs)
+        apply_usage_range_enrichment(fields, ranges)
 
     def _emit(
         self, output: str, output_path: str, output_format: str, *, reset: bool

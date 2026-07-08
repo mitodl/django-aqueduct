@@ -45,7 +45,8 @@ def test_static_discovery_recovers_aliases_and_required(
     assert "# >>> aqueduct:generated:fields" in out
     # Env alias + required-ness recovered from source (the old engine lost these).
     assert "validation_alias=AliasChoices('APP_BASE_URL')" in out
-    assert "APP_BASE_URL: str = Field(..." in out
+    # Name ends with _URL -> auto-promoted to AnyUrl (static, unconditional hint).
+    assert "APP_BASE_URL: AnyUrl = Field(..." in out
 
 
 def test_single_module_has_no_group_header(
@@ -371,3 +372,135 @@ def test_wrap_existing_missing_file() -> None:
 
     with pytest.raises(CommandError, match="does not exist"):
         call_command("generate_aqueduct_settings", wrap_existing="/no/such/file.py")
+
+
+# ------------------------------------------------------------------ #
+# --enrich-runtime / --enrich-usage                                     #
+# ------------------------------------------------------------------ #
+
+
+@pytest.fixture
+def enrichable_module(tmp_path, monkeypatch):
+    """A settings-like module whose values vary with the environment."""
+    path = tmp_path / "enrichable_settings.py"
+    path.write_text(
+        "import os\n"
+        "ENVIRONMENT = os.environ.get('APP_ENV', 'dev')\n"
+        "DATABASES = {'default': {'ENGINE': 'postgres', "
+        "'HOST': os.environ.get('DB_HOST', 'localhost')}}\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    import sys
+
+    yield "enrichable_settings"
+    sys.modules.pop("enrichable_settings", None)
+
+
+def test_enrich_runtime_requires_modules() -> None:
+    from django.core.management.base import CommandError
+
+    with pytest.raises(CommandError, match="requires --modules"):
+        call_command("generate_aqueduct_settings", enrich_runtime=True)
+
+
+def test_enrich_runtime_promotes_literal_from_env_files(
+    tmp_path, enrichable_module, capsys: _Capsys
+) -> None:
+    env_a = tmp_path / "a.env"
+    env_a.write_text("APP_ENV=staging\n")
+    env_b = tmp_path / "b.env"
+    env_b.write_text("APP_ENV=production\n")
+
+    call_command(
+        "generate_aqueduct_settings",
+        modules=enrichable_module,
+        enrich_runtime=True,
+        runtime_env_file=[str(env_a), str(env_b)],
+    )
+    out = capsys.readouterr().out
+    ast.parse(out)
+    assert "ENVIRONMENT: Literal['production', 'staging']" in out
+
+
+def test_enrich_runtime_refines_dict_shape(
+    tmp_path, enrichable_module, capsys: _Capsys
+) -> None:
+    env_a = tmp_path / "a.env"
+    env_a.write_text("DB_HOST=db-a\n")
+    env_b = tmp_path / "b.env"
+    env_b.write_text("DB_HOST=db-b\n")
+
+    call_command(
+        "generate_aqueduct_settings",
+        modules=enrichable_module,
+        enrich_runtime=True,
+        runtime_env_file=[str(env_a), str(env_b)],
+    )
+    out = capsys.readouterr().out
+    ast.parse(out)
+    assert "DATABASES: Annotated[dict[str, DatabasesEntry], NoDecode]" in out
+    assert "class DatabasesEntry(TypedDict, total=False):" in out
+
+
+def test_enrich_runtime_bad_env_file_raises(enrichable_module) -> None:
+    from django.core.management.base import CommandError
+
+    with pytest.raises(CommandError, match="cannot read"):
+        call_command(
+            "generate_aqueduct_settings",
+            modules=enrichable_module,
+            enrich_runtime=True,
+            runtime_env_file=["/no/such/file.env"],
+        )
+
+
+def test_enrich_runtime_without_env_files_samples_current_process_env(
+    enrichable_module, capsys: _Capsys
+) -> None:
+    """No --runtime-env-file: samples once under the current env, doesn't crash."""
+    call_command(
+        "generate_aqueduct_settings", modules=enrichable_module, enrich_runtime=True
+    )
+    out = capsys.readouterr().out
+    ast.parse(out)
+    assert "class AqueductSettings(BaseSettings):" in out
+
+
+def test_enrich_usage_promotes_literal_and_range(tmp_path, capsys: _Capsys) -> None:
+    usage_dir = tmp_path / "app"
+    usage_dir.mkdir()
+    (usage_dir / "views.py").write_text(
+        "from django.conf import settings\n"
+        "if settings.LOG_LEVEL == 'DEBUG':\n    pass\n"
+        "elif settings.LOG_LEVEL == 'INFO':\n    pass\n"
+        "if not (0 < settings.MAX_CONNECTIONS <= 1000):\n    raise ValueError\n"
+    )
+    call_command(
+        "generate_aqueduct_settings",
+        modules="v2_fixture_settings",
+        enrich_usage=[str(usage_dir)],
+    )
+    out = capsys.readouterr().out
+    ast.parse(out)
+    assert "LOG_LEVEL: Literal['DEBUG', 'INFO']" in out
+    assert "MAX_CONNECTIONS: int = Field(default=100, gt=0, le=1000)" in out
+    assert "usage-mined bound(s)" in out
+
+
+def test_literal_max_values_flag_lowers_threshold(tmp_path, capsys: _Capsys) -> None:
+    usage_dir = tmp_path / "app"
+    usage_dir.mkdir()
+    (usage_dir / "views.py").write_text(
+        "from django.conf import settings\n"
+        "if settings.LOG_LEVEL == 'DEBUG':\n    pass\n"
+        "elif settings.LOG_LEVEL == 'INFO':\n    pass\n"
+    )
+    call_command(
+        "generate_aqueduct_settings",
+        modules="v2_fixture_settings",
+        enrich_usage=[str(usage_dir)],
+        literal_max_values=1,
+    )
+    out = capsys.readouterr().out
+    assert "LOG_LEVEL: Literal[" not in out
+    assert "LOG_LEVEL: str = Field(default='INFO'" in out
