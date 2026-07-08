@@ -150,6 +150,20 @@ def _render_imports(specs: frozenset[ImportSpec]) -> str:
     return "\n".join(lines)
 
 
+def _ordered_set(value: set[object]) -> list[object]:
+    """Return *value*'s elements in a deterministic order.
+
+    ``set`` iteration order depends on hash values, which for ``str`` members
+    varies across process runs (hash randomization) — rendering a set in
+    iteration order would make the generated file nondeterministic between
+    runs, causing spurious ``--check`` drift. Sorting by ``(type name, repr)``
+    (same key ``discovery/enrich.py`` uses for ``Literal[...]`` members)
+    fixes an order regardless of hash seed, without requiring elements to be
+    mutually comparable.
+    """
+    return sorted(value, key=lambda v: (type(v).__name__, repr(v)))
+
+
 def _render_literal(value: object) -> str:
     """Render a literal default.
 
@@ -158,8 +172,10 @@ def _render_literal(value: object) -> str:
     an ``eval``-safe representation requiring no imports. Strings containing
     ``<`` render as proper string literals (the v1 ``"<" in repr`` heuristic
     that nuked them is gone). Strings (including nested ones, inside
-    list/tuple/dict) prefer double quotes to match ``ruff format``'s default —
-    see :func:`~django_aqueduct.discovery.ir.render_str_literal`.
+    list/tuple/dict/set) prefer double quotes to match ``ruff format``'s
+    default — see :func:`~django_aqueduct.discovery.ir.render_str_literal`.
+    ``set`` elements are rendered in a deterministic sorted order (see
+    :func:`_ordered_set`) rather than repr()'s hash-order iteration.
     """
     if isinstance(value, str):
         return render_str_literal(value)
@@ -173,6 +189,10 @@ def _render_literal(value: object) -> str:
             f"{_render_literal(k)}: {_render_literal(v)}" for k, v in value.items()
         )
         return "{" + items + "}"
+    if isinstance(value, set):
+        if not value:
+            return "set()"
+        return "{" + ", ".join(_render_literal(v) for v in _ordered_set(value)) + "}"
     return repr(value)
 
 
@@ -194,9 +214,14 @@ def _render_collection_wrapped(value: object, indent: str, extra: int = 0) -> st
     "hug the items on one shared line" middle tier: once it doesn't fit flat,
     it goes straight to one item per line (recursively wrapped the same way),
     with a trailing comma — *unless* there's exactly one item, which (like a
-    lone call argument) never gets a "magic" trailing comma. *extra* reserves
-    columns already spoken for on the line (e.g. a ``key: `` prefix or a
-    trailing comma).
+    lone call argument) never gets a "magic" trailing comma. The one
+    exception is a single-element *tuple*: ``(x,)``'s comma is semantically
+    required (without it, ``(x)`` is just a parenthesized expression), so it
+    is always kept. A ``set``'s items are rendered in the same deterministic
+    order as :func:`_render_literal` (see :func:`_ordered_set`) rather than
+    hash-order iteration, so this stays ``--check``-stable across runs.
+    *extra* reserves columns already spoken for on the line (e.g. a ``key: ``
+    prefix or a trailing comma).
     """
     single = _render_literal(value)
     if len(indent) + extra + len(single) <= _LINE_LENGTH or not isinstance(
@@ -212,9 +237,11 @@ def _render_collection_wrapped(value: object, indent: str, extra: int = 0) -> st
             for k, v in value.items()
         ]
     else:
-        items = [_render_collection_wrapped(v, inner) for v in value]
+        ordered = _ordered_set(value) if isinstance(value, set) else value
+        items = [_render_collection_wrapped(v, inner) for v in ordered]
     if len(items) == 1:
-        body = f"{inner}{items[0]}"
+        trailing_comma = "," if isinstance(value, tuple) else ""
+        body = f"{inner}{items[0]}{trailing_comma}"
     else:
         body = "\n".join(f"{inner}{item}," for item in items)
     return f"{open_b}\n{body}\n{indent}{close_b}"
