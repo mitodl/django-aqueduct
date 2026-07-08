@@ -10,14 +10,15 @@
 # >>> aqueduct:generated:imports
 from __future__ import annotations
 
+import ast
 import datetime
 import decimal
 import pathlib
 
 from decimal import Decimal
-from pydantic import AliasChoices, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import Any
+from pydantic import AliasChoices, Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from typing import Annotated, Any
 from decimal import Decimal as Dec
 # <<< aqueduct:generated:imports
 
@@ -28,7 +29,7 @@ class AqueductSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="", extra="allow")
 
     # >>> aqueduct:generated:fields
-    ALLOWED_HOSTS: list[Any] = Field(default_factory=lambda: ['localhost', '127.0.0.1'])
+    ALLOWED_HOSTS: Annotated[list[Any], NoDecode] = Field(default_factory=lambda: ['localhost', '127.0.0.1'])
     ALT_PRICE: Any = Field(default_factory=lambda: Dec("1.50"))  # TODO: refine type
     APP_BASE_URL: str = Field(..., validation_alias=AliasChoices('APP_BASE_URL'))
     CACHE_BACKEND: Any = Field(default=None)  # DERIVED: reproduce in a @model_validator (conditional/computed value)
@@ -49,6 +50,22 @@ class AqueductSettings(BaseSettings):
     TZ_NAME: str = Field(default='UTC')
     XML_PREAMBLE: str = Field(default="<?xml version='1.0'?>", description='A legitimate string containing an angle bracket. v1\'s `"<" in repr`\nheuristic silently replaced this with None.')
     # <<< aqueduct:generated:fields
+
+    # >>> aqueduct:generated:container_decoders
+    @field_validator('ALLOWED_HOSTS', mode="before")
+    @classmethod
+    def _aqueduct_decode_list_fields(cls, value: object) -> object:
+        """Parse a list from a non-JSON env string (Python-literal or comma-separated)."""
+        if not isinstance(value, str):
+            return value
+        try:
+            parsed = ast.literal_eval(value)
+        except (ValueError, SyntaxError):
+            parsed = None
+        if isinstance(parsed, list):
+            return parsed
+        return [item.strip() for item in value.split(",")]
+    # <<< aqueduct:generated:container_decoders
 
     # >>> aqueduct:preserved:validators
     # Add @model_validator / @field_validator methods here.

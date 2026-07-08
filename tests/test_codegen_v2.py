@@ -250,7 +250,7 @@ def test_dict_setting_enriched_to_typeddict():
     )
     src = ModelRenderer([f]).render()
     assert "class DatabasesEntry(TypedDict, total=False):" in src
-    assert "DATABASES: dict[str, DatabasesEntry]" in src
+    assert "DATABASES: Annotated[dict[str, DatabasesEntry], NoDecode]" in src
     assert "# >>> aqueduct:generated:typeddicts" in src
     ast.parse(src)
 
@@ -307,6 +307,68 @@ def test_generated_model_instantiates(fields, tmp_path):
     )
     assert inst.APP_BASE_URL == "https://example.test"
     assert inst.SESSION_AGE.days == 14
+
+
+def test_container_env_value_decodes_without_json(fields, tmp_path, monkeypatch):
+    """A non-JSON env value for a list field must decode, not raise SettingsError.
+
+    Reproduces the mit-learn failure: EnvParser (or a bare os.environ value)
+    feeds ALLOWED_HOSTS as a comma-separated string, and pydantic-settings'
+    default env source tries `json.loads` on any complex-typed field unless it
+    carries `NoDecode` plus a `field_validator` that parses the raw string.
+    """
+    import importlib.util
+    import sys
+
+    src = ModelRenderer(fields).render()
+    path = tmp_path / "generated_settings_env.py"
+    path.write_text(src, encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location("generated_settings_env", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["generated_settings_env"] = module
+    spec.loader.exec_module(module)
+
+    monkeypatch.setenv("ALLOWED_HOSTS", "example.com, *.example.com")
+    comma_inst = module.AqueductSettings(
+        SECRET_KEY="x",
+        APP_BASE_URL="https://example.test",
+        REQUIRED_WITH_DEFAULT="v",
+    )
+    assert comma_inst.ALLOWED_HOSTS == ["example.com", "*.example.com"]
+
+    monkeypatch.setenv("ALLOWED_HOSTS", "['example.com', '*.example.com']")
+    literal_inst = module.AqueductSettings(
+        SECRET_KEY="x",
+        APP_BASE_URL="https://example.test",
+        REQUIRED_WITH_DEFAULT="v",
+    )
+    assert literal_inst.ALLOWED_HOSTS == ["example.com", "*.example.com"]
+
+
+def test_dict_container_env_value_decodes_without_json(tmp_path, monkeypatch):
+    """A non-JSON env value for a dict field must decode, not raise SettingsError."""
+    import importlib.util
+    import sys
+
+    f = SettingField(
+        name="BEAT_SCHEDULE_EXTRA",
+        type=TypeRef("dict[str, Any]"),
+        default=Default.literal_({}, factory=True),
+        provenance=Provenance(source_module="m"),
+    )
+    src = ModelRenderer([f]).render()
+    path = tmp_path / "generated_settings_dict_env.py"
+    path.write_text(src, encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location("generated_settings_dict_env", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["generated_settings_dict_env"] = module
+    spec.loader.exec_module(module)
+
+    monkeypatch.setenv("BEAT_SCHEDULE_EXTRA", "{'minute': '*/5'}")
+    inst = module.AqueductSettings()
+    assert inst.BEAT_SCHEDULE_EXTRA == {"minute": "*/5"}
 
 
 def test_golden_file_matches(fields):
