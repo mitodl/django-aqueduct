@@ -117,6 +117,12 @@ def _render_default_expr(f: SettingField) -> tuple[str, str]:
             "default=None",
             "  # REDACTED: name looks secret-like — set via a source, not here",
         )
+    if d.strategy is DefaultStrategy.RUNTIME_ONLY:
+        return (
+            "default=None",
+            "  # RUNTIME-ONLY: observed at runtime, no static assignment found"
+            " — review and set explicitly",
+        )
     if d.strategy is DefaultStrategy.EXPR:
         return f"default_factory=lambda: {d.expr}", ""
     if d.strategy is DefaultStrategy.FACTORY:
@@ -183,12 +189,22 @@ def _render_field(
     if f.env_aliases:
         choices = ", ".join(repr(a) for a in f.env_aliases)
         parts.append(f"validation_alias=AliasChoices({choices})")
+    for bound in ("gt", "ge", "lt", "le"):
+        value = getattr(f.constraints, bound)
+        if value is not None:
+            parts.append(f"{bound}={value!r}")
     if f.description:
         parts.append(f"description={f.description!r}")
 
     field_call = f"Field({', '.join(parts)})"
     if f.type.needs_refinement:
         comment = comment or "  # TODO: refine type"
+    if not f.constraints.is_empty():
+        comment = (
+            f"{comment}  # usage-mined bound(s) — confirm before trusting"
+            if comment
+            else "  # usage-mined bound(s) — confirm before trusting"
+        )
     dev = "  # dev-only" if f.dev_only else ""
     return f"    {f.name}: {annotation} = {field_call}{comment}{dev}"
 
@@ -207,6 +223,7 @@ class ModelRenderer:
         *,
         class_name: str = "AqueductSettings",
         extra: str = "allow",
+        dict_enrichment: dict[str, tuple[str, list[TypedDictDef]]] | None = None,
     ) -> None:
         """Store the fields, class name, and model ``extra`` strictness.
 
@@ -216,11 +233,20 @@ class ModelRenderer:
             extra: Pydantic ``extra`` policy — ``"allow"`` (tolerate & keep
                 un-modeled keys), ``"ignore"`` (drop them), or ``"forbid"``
                 (reject them, enabling typo detection).
+            dict_enrichment: Precomputed ``{field_name: (annotation,
+                typeddict_defs)}`` overlay, e.g. from
+                :mod:`~django_aqueduct.discovery.runtime`'s multi-sample
+                genson enrichment. Takes precedence over this renderer's own
+                literal-default enrichment for the same field name — it can
+                refine fields (``DERIVED``/``Any``) whose default was never
+                a literal dict, which the renderer alone cannot do without
+                importing the target module.
         """
         if extra not in ("allow", "ignore", "forbid"):
             raise ValueError(f"extra must be allow/ignore/forbid, got {extra!r}")
         self._fields = fields
         self._class_name = class_name
+        self._dict_enrichment = dict_enrichment or {}
         self._extra = extra
 
     def _render_grouped_fields(
@@ -359,19 +385,36 @@ class ModelRenderer:
         ``dict[str, Any]`` literal into a precise ``dict[str, XxxEntry]`` plus
         the ``TypedDict`` definitions. Silently no-ops when genson is not
         installed (the ``[codegen]`` extra) or a value is not enrichable.
+
+        Externally supplied ``dict_enrichment`` (see ``__init__``) is applied
+        first and takes precedence per field name — it was already computed
+        upstream (genson need not be importable *here* for it to apply).
         """
+        enriched: dict[str, str] = {}
+        defs: list[TypedDictDef] = []
+        seen: set[str] = set()
+
+        for name, (annotation, new_defs) in self._dict_enrichment.items():
+            if annotation == "dict[str, Any]":
+                continue
+            if any(d.class_name in seen for d in new_defs):
+                continue
+            enriched[name] = annotation
+            for d in new_defs:
+                seen.add(d.class_name)
+            defs.extend(new_defs)
+
         try:
             from django_aqueduct.codegen.dict_schema import (  # noqa: PLC0415
                 enrich_dict_annotation,
             )
         except ImportError:
-            return {}, []
+            return enriched, defs
 
-        enriched: dict[str, str] = {}
-        defs: list[TypedDictDef] = []
-        seen: set[str] = set()
         literal_kinds = (DefaultStrategy.LITERAL, DefaultStrategy.FACTORY)
         for f in self._fields:
+            if f.name in enriched:
+                continue
             if f.default.strategy not in literal_kinds:
                 continue
             if not isinstance(f.default.literal, dict) or not f.default.literal:

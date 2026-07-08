@@ -20,6 +20,7 @@ Install the extra::
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -191,25 +192,27 @@ def _is_homogeneous_dict(value: dict[str, Any]) -> bool:
     return len(set(key_sets)) == 1
 
 
-def _build_genson_schema(value: Any) -> dict[str, Any] | None:
-    """Run genson on *value* and return the schema without the ``$schema`` key.
+def _build_genson_schema_multi(values: Sequence[Any]) -> dict[str, Any] | None:
+    """Run genson over every sample in *values* and merge into one schema.
 
-    Returns ``None`` when genson is unavailable, *value* is not
-    JSON-serialisable, or genson raises an exception.
+    Feeding genson multiple observations (e.g. the same setting's value
+    sampled under several env snapshots) lets it infer which keys are
+    present in every sample (``required``) versus only some (optional) —
+    strictly more accurate than any single snapshot can be.
 
-    Args:
-        value: Any JSON-serialisable Python object.
-
-    Returns:
-        A JSON Schema fragment dict, or ``None``.
+    Returns ``None`` when genson is unavailable, *values* is empty, any
+    element is not JSON-serialisable, or genson raises an exception.
     """
-    if not _genson_available() or not _is_json_serialisable(value):
+    if not _genson_available() or not values:
+        return None
+    if not all(_is_json_serialisable(v) for v in values):
         return None
     try:
         from genson import SchemaBuilder  # noqa: PLC0415
 
         builder = SchemaBuilder()
-        builder.add_object(value)
+        for v in values:
+            builder.add_object(v)
         schema = builder.to_schema()
         schema.pop("$schema", None)
         return schema  # type: ignore[no-any-return]
@@ -217,9 +220,90 @@ def _build_genson_schema(value: Any) -> dict[str, Any] | None:
         return None
 
 
+def _build_genson_schema(value: Any) -> dict[str, Any] | None:
+    """Run genson on a single *value*. See :func:`_build_genson_schema_multi`."""
+    return _build_genson_schema_multi([value])
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def enrich_dict_annotation_multi(
+    setting_name: str,
+    values: Sequence[dict[str, Any]],
+) -> tuple[str, list[TypedDictDef]]:
+    """Infer a richer type annotation for a dict-valued setting from N samples.
+
+    Same two structural patterns as :func:`enrich_dict_annotation`, but
+    merges the schema across every sample in *values* (e.g. the setting's
+    value observed under several env snapshots via
+    :mod:`~django_aqueduct.discovery.runtime`). A key present in every
+    sample's inner entries is inferred ``required``; a key present in only
+    some samples is inferred optional — strictly more accurate than any
+    single sample can produce, and the reason this exists as its own
+    function rather than a loop calling :func:`enrich_dict_annotation` once
+    per sample (which would just produce N independent, possibly
+    conflicting, TypedDicts).
+
+    Args:
+        setting_name: The UPPERCASE settings name used to derive class
+            names (e.g. ``"DATABASES"`` → ``"DatabasesEntry"``).
+        values: The runtime dict values observed for this setting, one per
+            sample. Non-dict and empty-dict samples are ignored.
+
+    Returns:
+        A ``(annotation_string, typeddict_defs)`` tuple. When enrichment is
+        not possible both members reflect the safe fallback:
+        ``("dict[str, Any]", [])``.
+    """
+    samples = [v for v in values if isinstance(v, dict) and v]
+    if not _genson_available() or not samples:
+        return "dict[str, Any]", []
+
+    top_schema = _build_genson_schema_multi(samples)
+    if top_schema is None or top_schema.get("type") != "object":
+        return "dict[str, Any]", []
+
+    pascal = _to_pascal_case(setting_name)
+
+    # ------------------------------------------------------------------
+    # Case 1: homogeneous dict of structs → dict[str, NameEntry]
+    # ------------------------------------------------------------------
+    if all(_is_homogeneous_dict(v) for v in samples):
+        inner_values = [inner for v in samples for inner in v.values()]
+        inner_schema_obj = _build_genson_schema_multi(inner_values)
+        if inner_schema_obj is None:
+            return "dict[str, Any]", []
+
+        if (
+            inner_schema_obj.get("type") != "object"
+            or "properties" not in inner_schema_obj
+        ):
+            # Homogeneous dict of primitives — extract the scalar type
+            # from the values' common schema instead
+            primitive_ann = _json_schema_type_to_annotation(inner_schema_obj)
+            if primitive_ann not in ("Any", "dict[str, Any]", "list[Any]"):
+                return f"dict[str, {primitive_ann}]", []
+            return "dict[str, Any]", []
+
+        entry_class = f"{pascal}Entry"
+        td = _schema_to_typeddict(entry_class, inner_schema_obj)
+        return f"dict[str, {entry_class}]", [td]
+
+    # ------------------------------------------------------------------
+    # Case 2: homogeneous dict of primitives (non-struct values)
+    # ------------------------------------------------------------------
+    inner_values = [inner for v in samples for inner in v.values()]
+    if all(not isinstance(v, dict | list) for v in inner_values):
+        val_schema = _build_genson_schema_multi(inner_values)
+        if val_schema is not None:
+            primitive_ann = _json_schema_type_to_annotation(val_schema)
+            if primitive_ann not in ("Any", "dict[str, Any]", "list[Any]"):
+                return f"dict[str, {primitive_ann}]", []
+
+    return "dict[str, Any]", []
 
 
 def enrich_dict_annotation(
@@ -259,83 +343,4 @@ def enrich_dict_annotation(
         is not possible both members reflect the safe fallback:
         ``("dict[str, Any]", [])``.
     """
-    if not _genson_available() or not _is_json_serialisable(value) or not value:
-        return "dict[str, Any]", []
-
-    top_schema = _build_genson_schema(value)
-    if top_schema is None or top_schema.get("type") != "object":
-        return "dict[str, Any]", []
-
-    pascal = _to_pascal_case(setting_name)
-
-    # ------------------------------------------------------------------
-    # Case 1: homogeneous dict of structs → dict[str, NameEntry]
-    # ------------------------------------------------------------------
-    if _is_homogeneous_dict(value):
-        # Merge schemas from all inner values so optional fields are captured
-        inner_schema = _build_genson_schema(list(value.values()))
-        if (
-            inner_schema is None
-            or inner_schema.get("type") != "array"
-            or "items" not in inner_schema
-        ):
-            # Fall back to merging schemas individually
-            try:
-                from genson import SchemaBuilder  # noqa: PLC0415
-
-                inner_builder = SchemaBuilder()
-                for v in value.values():
-                    inner_builder.add_object(v)
-                raw = inner_builder.to_schema()
-                raw.pop("$schema", None)
-                inner_schema_obj: dict[str, Any] = raw
-            except Exception:  # noqa: BLE001, S110
-                return "dict[str, Any]", []
-        else:
-            inner_schema_obj = inner_schema["items"]
-
-        if (
-            inner_schema_obj.get("type") != "object"
-            or "properties" not in inner_schema_obj
-        ):
-            # Homogeneous dict of primitives — extract the scalar type
-            # from the values' common schema instead
-            try:
-                from genson import SchemaBuilder  # noqa: PLC0415
-
-                vb = SchemaBuilder()
-                for v in value.values():
-                    vb.add_object(v)
-                val_schema = vb.to_schema()
-                val_schema.pop("$schema", None)
-                primitive_ann = _json_schema_type_to_annotation(val_schema)
-                if primitive_ann not in ("Any", "dict[str, Any]", "list[Any]"):
-                    return f"dict[str, {primitive_ann}]", []
-            except Exception:  # noqa: BLE001, S110
-                pass
-            return "dict[str, Any]", []
-
-        entry_class = f"{pascal}Entry"
-        td = _schema_to_typeddict(entry_class, inner_schema_obj)
-        return f"dict[str, {entry_class}]", [td]
-
-    # ------------------------------------------------------------------
-    # Case 2: homogeneous dict of primitives (non-struct values)
-    # ------------------------------------------------------------------
-    inner_values = list(value.values())
-    if all(not isinstance(v, dict | list) for v in inner_values):
-        try:
-            from genson import SchemaBuilder  # noqa: PLC0415
-
-            vb = SchemaBuilder()
-            for v in inner_values:
-                vb.add_object(v)
-            val_schema = vb.to_schema()
-            val_schema.pop("$schema", None)
-            primitive_ann = _json_schema_type_to_annotation(val_schema)
-            if primitive_ann not in ("Any", "dict[str, Any]", "list[Any]"):
-                return f"dict[str, {primitive_ann}]", []
-        except Exception:  # noqa: BLE001, S110
-            pass
-
-    return "dict[str, Any]", []
+    return enrich_dict_annotation_multi(setting_name, [value])

@@ -49,14 +49,15 @@ This emits a typed `AqueductSettings(BaseSettings)` class with every
 `UPPERCASE` name from your settings module as a Pydantic field, grouped
 under section comments by source module.
 
-> **Security note:** `--modules` inspection imports your settings module and
-> reads each setting's *live, resolved* value — i.e. whatever your
-> environment supplies, not the static default in your source code. Fields
-> whose name looks secret-like (`SECRET`, `PASSWORD`, `TOKEN`, `API_KEY`,
-> etc.) are redacted automatically (rendered as `default=None`), but review
-> the generated file for any other sensitive values before committing it.
-> Prefer running the generator against a dev/CI environment with dummy
-> values, never against a real production or staging environment.
+> **Security note:** `--modules` discovery reads your settings module's
+> *source* via AST — it never imports it, so it's safe to run against any
+> environment (there's no live env-var value for it to leak). Fields whose
+> name looks secret-like (`SECRET`, `PASSWORD`, `TOKEN`, `API_KEY`, etc.) are
+> still redacted automatically (rendered as `default=None`) in case a
+> literal secret was hardcoded in source; review the generated file for any
+> other sensitive literals before committing it. The only flag that imports
+> anything is the opt-in `--enrich-runtime` (see below) — everything else in
+> this Quickstart is static-only.
 
 ### Step 2 — Refine the scaffold
 
@@ -80,6 +81,50 @@ class AqueductSettings(BaseSettings):
         self.DATABASES = {"default": dj_database_url.parse(self.DATABASE_URL)}
         return self
 ```
+
+### Step 2b — Optional: enrich types automatically
+
+Static discovery can only see what's written literally in source, so a
+computed value (`DATABASES = dj_database_url.parse(...)`) or a value that's
+only ever one of a handful of options (`ENVIRONMENT` always being
+`"dev"`/`"staging"`/`"production"`) shows up as `Any`/`str` with a
+`# TODO: refine type` — the kind of thing you'd otherwise only discover by
+trial-and-error or reading the whole codebase. Two optional passes recover it
+automatically, refining *types only* (never a field's default, required-ness,
+or env aliases):
+
+```bash
+python manage.py generate_aqueduct_settings \
+    --modules myapp.settings \
+    --enrich-runtime \
+    --runtime-env-file .env.dev --runtime-env-file .env.staging --runtime-env-file .env.prod \
+    --enrich-usage src/myapp \
+    --output src/myapp/settings_model.py
+```
+
+- **`--enrich-runtime`** imports your settings module once per
+  `--runtime-env-file` snapshot (a `.env`-style file) and observes the actual
+  values. A dict whose default was never a literal gets real genson-inferred
+  `TypedDict` shape; a scalar field observed to take only a small, stable set
+  of values across snapshots is promoted to `Literal[...]`; a string that
+  looks like a URL is promoted to `pydantic.AnyUrl`. Without any
+  `--runtime-env-file`, it samples once under the current process
+  environment. **This is the one flag that executes code** — only point it at
+  modules and env files you trust.
+- **`--enrich-usage <path>`** never executes anything: it's a plain AST scan
+  of the given file/directory for `settings.X` comparisons in your app code —
+  `if settings.LOG_LEVEL == "DEBUG":`, `if not (0 < TIMEOUT <= 3600): raise`
+  — and promotes closed-value-set fields to `Literal[...]` and range-checked
+  numeric fields to `Field(gt=/ge=/lt=/le=)`.
+- Both are heuristics, not proofs — the renderer marks every result
+  `# TODO: refine type` (`Literal`/`AnyUrl`) or a `# usage-mined bound(s) —
+  confirm before trusting` comment (ranges) so you review before trusting
+  the inferred constraint in production; the scanned code only reflects the
+  values/bounds it happens to check, not necessarily the field's full valid
+  domain.
+- URL detection also runs **unconditionally**, no flag required: a `str`
+  field whose name ends in `_URL`/`_URI`, or whose static default parses as a
+  real URL, is promoted to `AnyUrl` for free.
 
 ### Step 3 — Wire the shim
 

@@ -80,6 +80,25 @@ def _annotation_to_json_schema(annotation: str) -> dict[str, Any]:
     return dict(_ANNOTATION_TO_JSON_TYPE.get(annotation, {}))
 
 
+def _literal_or_url_schema(annotation: str) -> dict[str, Any] | None:
+    """Return a schema fragment for an enrichment-produced ``Literal[...]``/``AnyUrl``.
+
+    Returns ``None`` for any other annotation (falls through to the static
+    lookup table).
+    """
+    if annotation == "AnyUrl":
+        return {"type": "string", "format": "uri"}
+    if annotation.startswith("Literal[") and annotation.endswith("]"):
+        import ast  # noqa: PLC0415
+
+        try:
+            values = ast.literal_eval("[" + annotation[len("Literal[") : -1] + "]")
+        except (ValueError, SyntaxError):
+            return None
+        return {"enum": values}
+    return None
+
+
 def _genson_schema_for(value: Any) -> dict[str, Any] | None:
     """Run genson on *value* and return a schema fragment, or ``None``.
 
@@ -186,7 +205,10 @@ class SchemaGenerator:
         ConfigMap. REDACTED fields (secrets) *are* configurable, so they keep
         their type constraint (usually ``string``) and merely omit ``default``.
         Dict/list literal defaults use genson when available for a richer
-        schema than the annotation alone.
+        schema than the annotation alone. ``Literal[...]``/``AnyUrl`` (from
+        ``--enrich-runtime``/``--enrich-usage``) map to ``enum``/``format:
+        uri``; usage-mined numeric bounds map to draft-07's
+        minimum/maximum/exclusiveMinimum/exclusiveMaximum.
         """
         if f.default.strategy is DefaultStrategy.DERIVED:
             return {}
@@ -199,4 +221,15 @@ class SchemaGenerator:
             if schema is not None:
                 return schema
 
-        return _annotation_to_json_schema(f.type.base)
+        schema = _literal_or_url_schema(f.type.base) or _annotation_to_json_schema(
+            f.type.base
+        )
+        if f.constraints.gt is not None:
+            schema["exclusiveMinimum"] = f.constraints.gt
+        if f.constraints.ge is not None:
+            schema["minimum"] = f.constraints.ge
+        if f.constraints.lt is not None:
+            schema["exclusiveMaximum"] = f.constraints.lt
+        if f.constraints.le is not None:
+            schema["maximum"] = f.constraints.le
+        return schema

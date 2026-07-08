@@ -8,6 +8,7 @@ import pytest
 
 from django_aqueduct.codegen.schema_generator import SchemaGenerator
 from django_aqueduct.discovery.ir import (
+    Constraints,
     Default,
     Provenance,
     SettingField,
@@ -124,3 +125,26 @@ def test_needs_refinement_flagged() -> None:
     f = _field("MYSTERY", type_base="Any", needs_refinement=True)
     prop = SchemaGenerator([f]).generate()["properties"]["MYSTERY"]
     assert prop["x-aqueduct-needs-refinement"] is True
+
+
+def test_literal_type_becomes_enum() -> None:
+    f = _field("ENVIRONMENT", type_base="Literal['dev', 'staging']")
+    prop = SchemaGenerator([f]).generate()["properties"]["ENVIRONMENT"]
+    assert prop["enum"] == ["dev", "staging"]
+
+
+def test_anyurl_type_becomes_uri_format() -> None:
+    f = _field("API_BASE_URL", type_base="AnyUrl")
+    prop = SchemaGenerator([f]).generate()["properties"]["API_BASE_URL"]
+    assert prop["type"] == "string"
+    assert prop["format"] == "uri"
+
+
+def test_constraints_become_json_schema_bounds() -> None:
+    f = _field("TIMEOUT", type_base="int", default=Default.literal_(30))
+    f.constraints = Constraints(gt=0, le=3600)
+    prop = SchemaGenerator([f]).generate()["properties"]["TIMEOUT"]
+    assert prop["exclusiveMinimum"] == 0
+    assert prop["maximum"] == 3600
+    assert "minimum" not in prop
+    assert "exclusiveMaximum" not in prop

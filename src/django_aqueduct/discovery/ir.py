@@ -140,6 +140,12 @@ class DefaultStrategy(str, Enum):  # noqa: UP042
             library.
         REDACTED: Name looks secret-like; the observed value is never written.
             Renders ``default=None`` with a "set explicitly" comment.
+        RUNTIME_ONLY: Discovered only by importing the settings module (e.g.
+            :mod:`~django_aqueduct.discovery.runtime`) — no static assignment
+            was found, so there is no source-derived value or required-ness
+            to preserve. Renders ``default=None`` with a review comment;
+            never carries the observed runtime value (that would reintroduce
+            the live-import secret-leak class v2 was built to eliminate).
     """
 
     LITERAL = "literal"
@@ -148,6 +154,7 @@ class DefaultStrategy(str, Enum):  # noqa: UP042
     REQUIRED = "required"
     DERIVED = "derived"
     REDACTED = "redacted"
+    RUNTIME_ONLY = "runtime_only"
 
 
 @dataclass(frozen=True)
@@ -198,6 +205,11 @@ class Default:
         """Build a ``REDACTED`` default (renders ``default=None`` + comment)."""
         return cls(strategy=DefaultStrategy.REDACTED)
 
+    @classmethod
+    def runtime_only(cls) -> Default:
+        """Build a ``RUNTIME_ONLY`` default (renders ``default=None`` + comment)."""
+        return cls(strategy=DefaultStrategy.RUNTIME_ONLY)
+
 
 class DiscoveryMethod(str, Enum):  # noqa: UP042
     """How a field was discovered — recorded on :class:`Provenance`."""
@@ -228,6 +240,38 @@ class Provenance:
     runtime_only: bool = False
 
 
+@dataclass(frozen=True)
+class Constraints:
+    """Numeric bounds layered onto a field's ``Field(...)`` call.
+
+    Populated only by usage-site range mining (see
+    :mod:`~django_aqueduct.discovery.usage` /
+    :mod:`~django_aqueduct.discovery.enrich`) — inferred from code that
+    validates a setting against a bound (``if not (0 < TIMEOUT <= 3600):
+    raise ...``), never from a live value. Like ``Literal`` promotion, this
+    is a heuristic bound rather than a guarantee: the renderer marks it with
+    a review comment since it only reflects the bounds the scanned code
+    happens to check, not necessarily the field's full valid range.
+
+    Attributes:
+        gt: Pydantic ``Field(gt=...)`` — strictly greater than.
+        ge: Pydantic ``Field(ge=...)`` — greater than or equal to.
+        lt: Pydantic ``Field(lt=...)`` — strictly less than.
+        le: Pydantic ``Field(le=...)`` — less than or equal to.
+    """
+
+    gt: float | int | None = None
+    ge: float | int | None = None
+    lt: float | int | None = None
+    le: float | int | None = None
+
+    def is_empty(self) -> bool:
+        """Return ``True`` when no bound is set."""
+        return (
+            self.gt is None and self.ge is None and self.lt is None and self.le is None
+        )
+
+
 @dataclass
 class SettingField:
     """One discovered setting, as typed IR.
@@ -244,6 +288,8 @@ class SettingField:
         owning_package: PyPI distribution that owns this setting (Phase D
             attribution seam); empty until attributed.
         dev_only: Whether the setting is development-only.
+        constraints: Usage-mined numeric bounds; empty unless
+            ``--enrich-usage`` found a range check for this field.
     """
 
     name: str
@@ -255,6 +301,7 @@ class SettingField:
     provenance: Provenance = field(default_factory=Provenance)
     owning_package: str = ""
     dev_only: bool = False
+    constraints: Constraints = field(default_factory=Constraints)
 
     def all_imports(self) -> frozenset[ImportSpec]:
         """Return every import this field needs (type + expr default)."""

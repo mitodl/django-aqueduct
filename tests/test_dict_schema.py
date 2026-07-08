@@ -11,6 +11,7 @@ from django_aqueduct.codegen.dict_schema import (
     _json_schema_type_to_annotation,
     _to_pascal_case,
     enrich_dict_annotation,
+    enrich_dict_annotation_multi,
 )
 
 # ------------------------------------------------------------------ #
@@ -201,3 +202,52 @@ def test_typeddict_field_annotations() -> None:
     assert by_name["ENGINE"].annotation == "str"
     assert by_name["ATOMIC_REQUESTS"].annotation == "bool"
     assert by_name["CONN_MAX_AGE"].annotation == "int"
+
+
+# ------------------------------------------------------------------ #
+# enrich_dict_annotation_multi — multi-sample merging                  #
+# ------------------------------------------------------------------ #
+
+
+def test_multi_single_sample_matches_single_value_function() -> None:
+    """A single-element samples list behaves identically to enrich_dict_annotation."""
+    value = {"default": {"ENGINE": "x", "NAME": "db"}}
+    single = enrich_dict_annotation("DATABASES", value)
+    multi = enrich_dict_annotation_multi("DATABASES", [value])
+    assert single == multi
+
+
+def test_multi_unions_keys_across_samples_as_optional() -> None:
+    """A key present in only some samples' entries becomes optional, not required."""
+    sample_a = {"default": {"ENGINE": "postgres", "NAME": "db"}}
+    sample_b = {"default": {"ENGINE": "postgres", "NAME": "db", "HOST": "localhost"}}
+    annotation, defs = enrich_dict_annotation_multi("DATABASES", [sample_a, sample_b])
+    assert annotation == "dict[str, DatabasesEntry]"
+    by_name = {f.name: f for f in defs[0].fields}
+    assert by_name["ENGINE"].required is True
+    assert by_name["NAME"].required is True
+    assert by_name["HOST"].required is False
+
+
+def test_multi_ignores_non_dict_and_empty_samples() -> None:
+    """None/empty-dict samples (e.g. a name absent under a snapshot) are skipped."""
+    sample_a = {"default": {"ENGINE": "postgres"}}
+    annotation, defs = enrich_dict_annotation_multi("DATABASES", [sample_a, {}, None])  # type: ignore[list-item]
+    assert annotation == "dict[str, DatabasesEntry]"
+    assert defs[0].class_name == "DatabasesEntry"
+
+
+def test_multi_empty_samples_falls_back() -> None:
+    annotation, defs = enrich_dict_annotation_multi("MY_DICT", [])
+    assert annotation == "dict[str, Any]"
+    assert defs == []
+
+
+def test_multi_primitive_dict_across_samples() -> None:
+    sample_a = {"en": "English"}
+    sample_b = {"en": "English", "fr": "Français"}
+    annotation, defs = enrich_dict_annotation_multi(
+        "CERT_LANGUAGES", [sample_a, sample_b]
+    )
+    assert annotation == "dict[str, str]"
+    assert defs == []
