@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1]
+
+### Fixed
+
+- **Generator no longer emits a blanket `# ruff: noqa`, and its output is
+  `ruff format`-stable.** Confirmed across all 5 app integrations
+  (learn-ai#552, mit-learn#3560, ocw-studio#3084, odl-video-service#1531,
+  mitxpro#3979): the blanket suppression tripped `PGH004` in repos that
+  select it, and — more disruptively — `ruff format` rewrote the generated
+  regions' quoting and line-wrapping, which then made `--check` report drift
+  against the freshly-generated (unformatted) output. Every one of the 5
+  apps had worked around this with `[tool.ruff] extend-exclude = [...]`,
+  losing lint coverage of the hand-written preserved regions in the same
+  file. Fixed by making the renderer itself produce `ruff format`-stable
+  output: string literals prefer double quotes, overlong `Field(...)`/
+  `@field_validator(...)` calls and list/dict literal defaults explode the
+  same way `ruff format`'s own Black-derived splitter would, and imports are
+  isort-clean (stdlib/third-party sections, conditional `Any`). The two
+  latent bugs the blanket noqa had been masking — an unsorted import block
+  whenever a captured default expression used an aliased import, and an
+  unconditional (sometimes-unused) `from typing import Any` — are fixed as
+  part of this. What's left uncovered — a handful of long human-authored
+  strings (descriptions, usage-mined comments) that can't be shortened by
+  wrapping — gets a targeted `# noqa: E501` on that one line instead of a
+  file-level suppression. If your project selects rule groups beyond the
+  ~9 this was validated against (e.g. `Q`, `COM`, `ANN`, `D` on generated
+  code), `[tool.ruff] extend-exclude` remains the documented fallback.
+
 ## [0.8.0]
 
 Phase C wrap-up: a one-time migration path for hand-refined v1-era models,

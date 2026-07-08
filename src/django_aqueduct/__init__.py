@@ -6,7 +6,7 @@ from django_aqueduct.adapter import (
     get_configured_model,
 )
 
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 
 __all__ = [
     "configure_django_programmatic",

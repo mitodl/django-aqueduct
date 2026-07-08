@@ -133,4 +133,4 @@ def test_runtime_only_default_renders_none_with_comment():
 def test_runtime_only_widens_concrete_type_to_optional():
     f = _field("MYSTERY", base="str", default=Default.runtime_only())
     src = ModelRenderer([f]).render()
-    assert "MYSTERY: str | None = Field(default=None)" in src
+    assert "MYSTERY: str | None = Field(\n        default=None\n    )" in src

@@ -27,6 +27,31 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 
+def render_str_literal(s: str) -> str:
+    """Render a string literal the way ``ruff format`` (Black-style) would.
+
+    ``repr()`` prefers single quotes unless *s* contains ``'`` and no ``"``.
+    ``ruff format`` prefers double quotes unless that would need strictly more
+    backslash-escapes than single quotes would — which only disagrees with
+    ``repr()`` when *s* contains no quote characters at all, or contains both
+    and escaping ``"`` would be cheaper (or equal). Reusing ``repr()`` for
+    everything else (backslashes, control characters, ...) and only
+    re-quoting the outer delimiter keeps this exact without reimplementing
+    ``unicode_repr``. Shared between the renderer (field defaults/aliases/
+    descriptions) and discovery's ``Literal[...]`` construction so every
+    string literal the generator ever emits is ``ruff format``-stable.
+    """
+    r = repr(s)
+    if r[0] == '"':
+        return r  # repr() already chose double quotes.
+    double_count = s.count('"')
+    single_count = s.count("'")
+    if double_count > single_count:
+        return r  # Double-quoting would need strictly more escapes; keep '.
+    requoted = r[1:-1].replace("\\'", "'").replace('"', '\\"')
+    return f'"{requoted}"'
+
+
 @dataclass(frozen=True)
 class ImportSpec:
     """A single import the renderer must emit for a type or expression to resolve.
