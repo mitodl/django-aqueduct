@@ -345,6 +345,47 @@ def test_container_env_value_decodes_without_json(fields, tmp_path, monkeypatch)
     )
     assert literal_inst.ALLOWED_HOSTS == ["example.com", "*.example.com"]
 
+    # Genuine JSON — including tokens (true/false/null) that aren't valid
+    # Python literals — must still decode correctly, not regress vs. the
+    # json.loads pydantic-settings used before NoDecode was added.
+    monkeypatch.setenv("ALLOWED_HOSTS", '["example.com", "*.example.com"]')
+    json_inst = module.AqueductSettings(
+        SECRET_KEY="x",
+        APP_BASE_URL="https://example.test",
+        REQUIRED_WITH_DEFAULT="v",
+    )
+    assert json_inst.ALLOWED_HOSTS == ["example.com", "*.example.com"]
+
+
+def test_list_container_json_with_non_python_tokens_decodes(tmp_path, monkeypatch):
+    """`[true, false]`/`[null]` are valid JSON but not valid Python literals.
+
+    ast.literal_eval alone would fail these and mis-fire the comma-split
+    fallback (producing garbage like '[true' / 'false]'); json.loads must be
+    tried first so genuine JSON keeps decoding correctly.
+    """
+    import importlib.util
+    import sys
+
+    f = SettingField(
+        name="FEATURE_FLAGS",
+        type=TypeRef("list[Any]"),
+        default=Default.literal_([], factory=True),
+        provenance=Provenance(source_module="m"),
+    )
+    src = ModelRenderer([f]).render()
+    path = tmp_path / "generated_settings_list_json.py"
+    path.write_text(src, encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location("generated_settings_list_json", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["generated_settings_list_json"] = module
+    spec.loader.exec_module(module)
+
+    monkeypatch.setenv("FEATURE_FLAGS", "[true, false, null]")
+    inst = module.AqueductSettings()
+    assert inst.FEATURE_FLAGS == [True, False, None]
+
 
 def test_dict_container_env_value_decodes_without_json(tmp_path, monkeypatch):
     """A non-JSON env value for a dict field must decode, not raise SettingsError."""
@@ -369,6 +410,12 @@ def test_dict_container_env_value_decodes_without_json(tmp_path, monkeypatch):
     monkeypatch.setenv("BEAT_SCHEDULE_EXTRA", "{'minute': '*/5'}")
     inst = module.AqueductSettings()
     assert inst.BEAT_SCHEDULE_EXTRA == {"minute": "*/5"}
+
+    # Genuine JSON with `null` (not a valid Python literal token) must still
+    # decode correctly via json.loads, not regress vs. prior behavior.
+    monkeypatch.setenv("BEAT_SCHEDULE_EXTRA", '{"minute": "*/5", "task": null}')
+    json_inst = module.AqueductSettings()
+    assert json_inst.BEAT_SCHEDULE_EXTRA == {"minute": "*/5", "task": None}
 
 
 def test_golden_file_matches(fields):

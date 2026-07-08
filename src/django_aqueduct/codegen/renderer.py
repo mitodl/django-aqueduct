@@ -291,15 +291,19 @@ class ModelRenderer:
     def _render_container_decoders(
         self, list_fields: list[str], dict_fields: list[str]
     ) -> list[str]:
-        """Render ``field_validator``s that parse non-JSON env strings for containers.
+        """Render ``field_validator``s that parse env strings for containers.
 
         ``pydantic-settings`` json-decodes any complex-typed field's env
-        value; real env vars feed list/dict settings as comma-separated,
-        Python-literal, or other non-JSON strings (this is exactly what the
-        mitol ``EnvParser`` list/crontab helpers produce), which raises
-        ``SettingsError`` before the model ever instantiates. Paired with the
-        ``NoDecode`` annotation on each field (see ``_render_field``), these
-        validators receive the raw string and parse it themselves.
+        value by default, which already handles genuine JSON (``[true,
+        false]``, ``{"a": null}``); real env vars also feed list/dict
+        settings as comma-separated or Python-literal strings (this is
+        exactly what the mitol ``EnvParser`` list/crontab helpers produce),
+        which raise ``SettingsError`` before the model ever instantiates.
+        Paired with the ``NoDecode`` annotation on each field (see
+        ``_render_field``), these validators receive the raw string and try
+        ``json.loads`` first (so JSON inputs keep working exactly as
+        before), then ``ast.literal_eval`` (Python-literal strings, e.g.
+        single-quoted), then — lists only — a final comma-split fallback.
         """
         lines: list[str] = []
         if list_fields:
@@ -310,15 +314,18 @@ class ModelRenderer:
                 "    def _aqueduct_decode_list_fields(cls, value: object) -> object:"
             )
             lines.append(
-                '        """Parse a list from a non-JSON env string '
-                '(Python-literal or comma-separated)."""'
+                '        """Parse a list from a JSON, Python-literal, or '
+                'comma-separated env string."""'
             )
             lines.append("        if not isinstance(value, str):")
             lines.append("            return value")
             lines.append("        try:")
-            lines.append("            parsed = ast.literal_eval(value)")
-            lines.append("        except (ValueError, SyntaxError):")
-            lines.append("            parsed = None")
+            lines.append("            parsed = json.loads(value)")
+            lines.append("        except (ValueError, TypeError):")
+            lines.append("            try:")
+            lines.append("                parsed = ast.literal_eval(value)")
+            lines.append("            except (ValueError, SyntaxError):")
+            lines.append("                parsed = None")
             lines.append("        if isinstance(parsed, list):")
             lines.append("            return parsed")
             lines.append('        return [item.strip() for item in value.split(",")]')
@@ -332,10 +339,16 @@ class ModelRenderer:
                 "    def _aqueduct_decode_dict_fields(cls, value: object) -> object:"
             )
             lines.append(
-                '        """Parse a dict from a non-JSON literal env string."""'
+                '        """Parse a dict from a JSON or Python-literal env string."""'
             )
             lines.append("        if not isinstance(value, str):")
             lines.append("            return value")
+            lines.append("        try:")
+            lines.append("            parsed = json.loads(value)")
+            lines.append("        except (ValueError, TypeError):")
+            lines.append("            parsed = None")
+            lines.append("        if isinstance(parsed, dict):")
+            lines.append("            return parsed")
             lines.append("        return ast.literal_eval(value)")
         return lines
 
@@ -381,6 +394,7 @@ class ModelRenderer:
             specs.add(ImportSpec("pydantic", "AliasChoices"))
         if has_containers:
             specs.add(ImportSpec("ast"))
+            specs.add(ImportSpec("json"))
             specs.add(ImportSpec("typing", "Annotated"))
             specs.add(ImportSpec("pydantic", "field_validator"))
             specs.add(ImportSpec("pydantic_settings", "NoDecode"))

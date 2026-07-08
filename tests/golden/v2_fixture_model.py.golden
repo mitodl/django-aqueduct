@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 import datetime
 import decimal
+import json
 import pathlib
 
 from decimal import Decimal
@@ -55,13 +56,16 @@ class AqueductSettings(BaseSettings):
     @field_validator('ALLOWED_HOSTS', mode="before")
     @classmethod
     def _aqueduct_decode_list_fields(cls, value: object) -> object:
-        """Parse a list from a non-JSON env string (Python-literal or comma-separated)."""
+        """Parse a list from a JSON, Python-literal, or comma-separated env string."""
         if not isinstance(value, str):
             return value
         try:
-            parsed = ast.literal_eval(value)
-        except (ValueError, SyntaxError):
-            parsed = None
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            try:
+                parsed = ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                parsed = None
         if isinstance(parsed, list):
             return parsed
         return [item.strip() for item in value.split(",")]
