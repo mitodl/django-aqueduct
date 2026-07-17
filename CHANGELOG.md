@@ -15,9 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fails pydantic validation against its own default — edx-platform uses this
   `os.environ.get(NAME, <bool/int>)` toggle idiom pervasively (v1 correctly
   inferred `bool`). Static discovery now prefers the scalar literal default's
-  type when it contradicts the reader's; container defaults (`[]`/`{}`) are left
-  alone so a precise reader type like `list[str]` is not collapsed to
-  `list[Any]`.
+  type when it contradicts the reader's; only *scalar* defaults
+  (`bool`/`int`/`float`/`str`) reconcile — a container default (`[]`/`{}` or an
+  immutable `tuple`/`frozenset`) is left alone so a precise reader type like
+  `list[str]` is not collapsed to `list[Any]`/`tuple[Any, ...]`.
 
 ### Changed
 

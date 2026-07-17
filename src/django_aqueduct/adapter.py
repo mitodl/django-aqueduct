@@ -52,7 +52,7 @@ def _overlay(instance: BaseSettings, base_values: dict[str, Any]) -> dict[str, A
     * **Source- or validator-set fields win.**  A field provided by a settings
       source (env var, YAML, ``.env``, ``__init__``) or assigned inside a
       ``@model_validator`` is a real override — pydantic records both in
-      ``model_fields_set``, so ``model_dump(exclude_unset=True)`` is exactly
+      ``model_fields_set`` (including ``extra`` fields), which is exactly
       "everything the model meaningfully set."
     * **A field left at its default defers to the base** *when the base carries
       it*.  This is the important case for a codegen model: the generated
@@ -69,7 +69,7 @@ def _overlay(instance: BaseSettings, base_values: dict[str, Any]) -> dict[str, A
     let a non-``None`` snapshot default clobber a live base value.
     """
     full = instance.model_dump()
-    overridden = set(instance.model_dump(exclude_unset=True))
+    overridden = instance.model_fields_set
     merged = dict(base_values)
     for key, value in full.items():
         if key in overridden or key not in base_values:

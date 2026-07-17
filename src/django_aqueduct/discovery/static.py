@@ -540,11 +540,13 @@ class StaticModuleInspector:
         default (``X: str = False``). When a *scalar* literal default's type
         contradicts the reader's, prefer the default's type.
 
-        Only ``LITERAL`` (scalar) defaults are reconciled: a ``FACTORY`` default
-        (``[]``/``{}``) carries no element info, so a precise reader type such as
-        ``list[str]`` stays authoritative rather than collapsing to ``list[Any]``.
+        Only *scalar* literal defaults (``bool``/``int``/``float``/``str``) are
+        reconciled.  A container default — ``FACTORY`` (``[]``/``{}``) or an
+        immutable ``tuple``/``frozenset`` (which is ``LITERAL``) — carries no
+        element info, so a precise reader type such as ``list[str]`` stays
+        authoritative rather than collapsing to ``list[Any]``/``tuple[Any, ...]``.
         """
-        if default.strategy is DefaultStrategy.LITERAL and default.literal is not None:
+        if isinstance(default.literal, bool | int | float | str):
             literal_type = _literal_type(default.literal)
             if literal_type.base != reader_type.base:
                 return literal_type
