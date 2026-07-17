@@ -35,6 +35,10 @@ APP_BASE_URL = os.environ["APP_BASE_URL"]
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 # os.getenv with no default → optional, None (v1 wrongly marked this required).
 EXTRA_HOST = os.getenv("EXTRA_HOST")
+# Env reader whose literal fallback contradicts the reader's str type: the field
+# is a bool toggle (env strings coerce), so the annotation must follow the
+# default's type — `str = False` would fail validation against its own default.
+FEATURE_TOGGLE = os.environ.get("FEATURE_TOGGLE", False)
 
 # Typed reader with BOTH a default and an explicit required=True: the explicit
 # flag must win (env is only referenced statically; this file is never imported).

@@ -108,6 +108,19 @@ def test_explicit_required_wins_over_default(fields):
     assert f.env_aliases == ("REQUIRED_WITH_DEFAULT",)
 
 
+def test_env_reader_bool_default_types_as_bool(fields):
+    # os.environ.get("FEATURE_TOGGLE", False): the reader yields str, but the
+    # literal bool fallback is the field's semantic type. The annotation must
+    # follow the default (bool), else `FEATURE_TOGGLE: str = False` fails
+    # validation against its own default (regression against edx-platform's
+    # heavy use of this toggle idiom).
+    f = _by_name(fields)["FEATURE_TOGGLE"]
+    assert f.type.base == "bool"
+    assert f.default.strategy is DefaultStrategy.LITERAL
+    assert f.default.literal is False
+    assert f.env_aliases == ("FEATURE_TOGGLE",)
+
+
 def test_get_list_of_str_reader_typed_as_list(fields):
     # mitol's get_list_of_str(...) must be recognised as a list[str] reader,
     # not fall through to Any (which would skip NoDecode/the container

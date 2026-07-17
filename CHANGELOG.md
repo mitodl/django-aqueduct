@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.10.0]
 
+### Fixed
+
+- **An env reader with a scalar literal default whose type contradicts the
+  reader now annotates from the default.** `os.environ.get("X", False)` yielded
+  `X: str = False` (the reader's `str` type with the `bool` fallback), which
+  fails pydantic validation against its own default — edx-platform uses this
+  `os.environ.get(NAME, <bool/int>)` toggle idiom pervasively (v1 correctly
+  inferred `bool`). Static discovery now prefers the scalar literal default's
+  type when it contradicts the reader's; container defaults (`[]`/`{}`) are left
+  alone so a precise reader type like `list[str]` is not collapsed to
+  `list[Any]`.
+
 ### Changed
 
 - **`configure_django_settings(base=…)` overlay now defers un-overridden fields
