@@ -54,6 +54,11 @@ class AqueductSettings(BaseSettings):
         validation_alias=AliasChoices("EXTRA_HOST"),
         description="os.getenv with no default → optional, None (v1 wrongly marked this required).",  # noqa: E501
     )
+    FEATURE_TOGGLE: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("FEATURE_TOGGLE"),
+        description="Env reader whose literal fallback contradicts the reader's str type: the field\nis a bool toggle (env strings coerce), so the annotation must follow the\ndefault's type — `str = False` would fail validation against its own default.",  # noqa: E501
+    )
     LANG_CODE: str = Field(default="en")
     LOG_LEVEL: str = Field(
         default="INFO",

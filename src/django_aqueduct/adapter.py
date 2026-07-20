@@ -44,12 +44,47 @@ def _collect_base_settings(
     return {name: getattr(module, name) for name in dir(module) if name.isupper()}
 
 
+def _overlay(instance: BaseSettings, base_values: dict[str, Any]) -> dict[str, Any]:
+    """Overlay *instance* onto *base_values*, keeping base for un-overridden fields.
+
+    Only the settings the model *meaningfully carries* override the base:
+
+    * **Source- or validator-set fields win.**  A field provided by a settings
+      source (env var, YAML, ``.env``, ``__init__``) or assigned inside a
+      ``@model_validator`` is a real override — pydantic records both in
+      ``model_fields_set`` (including ``extra`` fields), which is exactly
+      "everything the model meaningfully set."
+    * **A field left at its default defers to the base** *when the base carries
+      it*.  This is the important case for a codegen model: the generated
+      default is a static snapshot of the base at generation time, so a setting
+      the model never overrides — ``INSTALLED_APPS``, ``MIDDLEWARE`` and the
+      other structural settings a plugin framework augments at *runtime*, or an
+      opaque ``None``-rendered field like ``XBLOCK_MIXINS`` — resolves to the
+      *live* base value, not the frozen snapshot.
+    * **A model-only field contributes its default.**  A field the model
+      declares that the base does not carry (a hand-added setting) still lands in
+      the result at its default, so nothing the model adds silently vanishes.
+
+    This replaces the earlier "model wins unless it is ``None``" heuristic, which
+    let a non-``None`` snapshot default clobber a live base value.
+    """
+    full = instance.model_dump()
+    overridden = instance.model_fields_set
+    merged = dict(base_values)
+    for key, value in full.items():
+        if key in overridden or key not in base_values:
+            merged[key] = value
+        # else: field is at its default AND the base carries it → keep base.
+    return merged
+
+
 def configure_django_settings(
     model_class: type[BaseSettings],
     scope: dict[str, Any] | None = None,
     base: str | ModuleType | dict[str, Any] | None = None,
     *,
     pre_configure: Callable[[BaseSettings], None] | None = None,
+    post_configure: Callable[[dict[str, Any], BaseSettings], None] | None = None,
 ) -> None:
     """Instantiate *model_class* and inject its values into a Django settings module.
 
@@ -66,20 +101,28 @@ def configure_django_settings(
     work unchanged.
 
     **Overlay semantics.**  When *base* is supplied, the model is *overlaid*
-    onto the base settings rather than replacing them wholesale.  The base
-    (typically the upstream ``…envs.common`` module) provides a value for
-    every setting the model does not meaningfully carry, so a setting that is
-    absent from the model, or that the generator could not serialise (rendered
-    as a ``None`` default — e.g. ``INSTALLED_APPS`` built from class
-    references, ``XBLOCK_MIXINS``), degrades to the real base value instead of
-    silently vanishing to Django's empty default.
+    onto the base settings rather than replacing them wholesale.  Only the
+    settings the model *meaningfully carries* override the base:
 
-    The merge rule is: **the model value wins, unless it is ``None`` and the
-    base has a non-``None`` value** — in which case the base value is kept.
-    This restores the unserialisable settings automatically and generalises
-    the per-field ``@model_validator`` restore pattern.
+    * a field set by a settings source (env/YAML/``.env``/``__init__``) or by a
+      ``@model_validator`` **wins**;
+    * a field left at its **default** defers to the base **when the base carries
+      it** — so a codegen model's static snapshot never clobbers the live base,
+      and settings a runtime plugin framework injects into the base (extra
+      ``INSTALLED_APPS`` entries, ``MIDDLEWARE`` …) survive;
+    * a field the base does **not** carry contributes its default, so a
+      hand-added model setting is not lost.
 
-    When *base* is ``None`` the historical replace behaviour is preserved.
+    See :func:`_overlay` for the full rule.  This supersedes the earlier "model
+    wins unless it is ``None``" heuristic, which let a non-``None`` snapshot
+    default overwrite a live base value.  When *base* is ``None`` the model
+    fully replaces the scope (unchanged).
+
+    A field that a validator *extends from the base* (e.g. appending a plugin's
+    app to the base's plugin-complete ``INSTALLED_APPS``) cannot be expressed as
+    a validator — the model is built before the overlay and has no access to the
+    base.  Use *post_configure* for that: it runs after the overlay, on the merged
+    settings.
 
     Args:
         model_class: A :class:`pydantic_settings.BaseSettings` subclass.
@@ -94,6 +137,11 @@ def configure_django_settings(
             initialise Sentry (or anything else) with typed values before
             Django settings exist. The instance is also exposed as
             ``settings.AQUEDUCT_MODEL`` and via :func:`get_configured_model`.
+        post_configure: Optional callback invoked with ``(merged, instance)``
+            *after* the base overlay and *before* the scope is written — the
+            supported place to adjust final, base-resolved settings (e.g. extend
+            the base's plugin-complete ``INSTALLED_APPS``/``AUTHENTICATION_BACKENDS``).
+            Mutate *merged* in place; *instance* gives typed access to the model.
     """
     if scope is None:
         frame = inspect.currentframe()
@@ -113,20 +161,15 @@ def configure_django_settings(
     _configured_model = instance
     scope["AQUEDUCT_MODEL"] = instance
 
-    model_values = instance.model_dump()
-
     base_values = _collect_base_settings(base)
-    if not base_values:
-        scope.update(model_values)
-        return
+    if base_values:
+        merged = _overlay(instance, base_values)
+    else:
+        merged = instance.model_dump()
 
-    merged = dict(base_values)
-    for key, value in model_values.items():
-        if value is None and base_values.get(key) is not None:
-            # The model could not serialise this value (opaque/derived field
-            # rendered as default=None) — keep the real base value.
-            continue
-        merged[key] = value
+    if post_configure is not None:
+        post_configure(merged, instance)
+
     scope.update(merged)
 
 

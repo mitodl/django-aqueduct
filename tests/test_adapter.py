@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 # Repo root — works both locally and in CI where cwd is the checkout directory
@@ -110,16 +111,113 @@ def test_overlay_none_does_not_clobber_base():
     assert scope["XBLOCK_MIXINS"] == ("a", "b")
 
 
-def test_overlay_model_value_wins_over_base():
-    """A non-None model value overrides the base value."""
+def test_overlay_default_defers_to_base():
+    """A field left at its class default defers to the base's value.
+
+    This is the codegen case: the model's default is a static snapshot of the
+    base at generation time, so the live base value must win — a plugin app the
+    base gained at runtime is not clobbered by the frozen snapshot.
+    """
     from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
 
     base = {"DEBUG": False, "EXTRA": "from-base"}
     scope: dict = {}
     configure_django_settings(_OverlaySettings, scope=scope, base=base)
 
+    # Neither field was set by a source or a validator — both are class
+    # defaults, so the (live) base value wins over the snapshot default.
+    assert scope["DEBUG"] is False
+    assert scope["EXTRA"] == "from-base"
+
+
+def test_overlay_source_set_value_wins_over_base(monkeypatch):
+    """A field set by a settings source overrides the base value."""
+    from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
+
+    monkeypatch.setenv("DEBUG", "true")
+    base = {"DEBUG": False}
+    scope: dict = {}
+    configure_django_settings(_OverlaySettings, scope=scope, base=base)
+
+    # DEBUG is now in model_fields_set (env-provided) → the model value wins.
     assert scope["DEBUG"] is True
+
+
+def test_overlay_model_only_field_contributes_default():
+    """A model field the base does not carry lands at its default."""
+    from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
+
+    base = {"DEBUG": False}  # no EXTRA in base
+    scope: dict = {}
+    configure_django_settings(_OverlaySettings, scope=scope, base=base)
+
+    # EXTRA is model-only → its default is contributed, not dropped.
     assert scope["EXTRA"] == "from-model"
+
+
+class _DerivedSettings(BaseSettings):
+    BROKER_HOST: str | None = None
+    BROKER_URL: str | None = None
+
+    @model_validator(mode="after")
+    def _derive(self):
+        if self.BROKER_HOST and not self.BROKER_URL:
+            self.BROKER_URL = f"amqp://{self.BROKER_HOST}/"
+        return self
+
+
+def test_overlay_validator_set_value_wins_over_base(monkeypatch):
+    """A value assigned by a @model_validator overrides the base value."""
+    from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
+
+    monkeypatch.setenv("BROKER_HOST", "rabbit")
+    base = {"BROKER_URL": "amqp://base-default/"}
+    scope: dict = {}
+    configure_django_settings(_DerivedSettings, scope=scope, base=base)
+
+    # The validator assigned BROKER_URL → it is in model_fields_set → wins.
+    assert scope["BROKER_URL"] == "amqp://rabbit/"
+
+
+def test_overlay_unfired_validator_field_defers_to_base():
+    """A derived field the validator did not set defers to the base value."""
+    from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
+
+    base = {"BROKER_URL": "amqp://base-default/"}
+    scope: dict = {}
+    configure_django_settings(_DerivedSettings, scope=scope, base=base)
+
+    # BROKER_HOST unset → validator does not assign BROKER_URL → base wins.
+    assert scope["BROKER_URL"] == "amqp://base-default/"
+
+
+def test_post_configure_runs_after_overlay():
+    """post_configure receives the merged settings and can extend base lists."""
+    from django_aqueduct import get_configured_model  # noqa: PLC0415
+    from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
+
+    seen: dict = {}
+
+    def _post(merged, instance):
+        # Runs after the base overlay: INSTALLED_APPS is the (plugin-complete)
+        # base list, which we extend here rather than in a validator.
+        seen["apps_before"] = list(merged["INSTALLED_APPS"])
+        seen["is_model"] = instance is get_configured_model()
+        merged["INSTALLED_APPS"] = [*merged["INSTALLED_APPS"], "myplugin.apps.Cfg"]
+
+    base = {"INSTALLED_APPS": ["django.contrib.auth", "plugin.injected"]}
+    scope: dict = {}
+    configure_django_settings(
+        _OverlaySettings, scope=scope, base=base, post_configure=_post
+    )
+
+    assert seen["apps_before"] == ["django.contrib.auth", "plugin.injected"]
+    assert seen["is_model"] is True
+    assert scope["INSTALLED_APPS"] == [
+        "django.contrib.auth",
+        "plugin.injected",
+        "myplugin.apps.Cfg",
+    ]
 
 
 def test_overlay_ignores_lowercase_base_names():

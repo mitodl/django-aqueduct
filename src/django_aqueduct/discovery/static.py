@@ -489,7 +489,8 @@ class StaticModuleInspector:
                 # e.g. os.getenv("X") with no default → optional, None.
                 return field(reader.type_ref.with_optional(), Default.literal_(None))
             default, optional = self._default_for(reader.default_node, imports, source)
-            return field(reader.type_ref.with_optional(optional=optional), default)
+            type_ref = self._reader_type_for_default(reader.type_ref, default)
+            return field(type_ref.with_optional(optional=optional), default)
 
         # Plain assignment: literal, reproducible expression, or DERIVED.
         default, optional = self._default_for(value, imports, source)
@@ -526,6 +527,30 @@ class StaticModuleInspector:
         if is_literal:
             return _literal_type(literal_value)
         return StaticModuleInspector._infer_expr_type(node)
+
+    @staticmethod
+    def _reader_type_for_default(reader_type: TypeRef, default: Default) -> TypeRef:
+        """Reconcile a reader's type with a contradicting literal default.
+
+        An env reader like ``os.environ.get("X", False)`` yields the env value's
+        type (``str``) but a literal fallback of a different type (``bool``). The
+        fallback is the field's *semantic* type — edx-platform (and others) use
+        this idiom for bool/int toggles, and env strings coerce under pydantic —
+        so annotating it ``str`` makes the model fail validation against its own
+        default (``X: str = False``). When a *scalar* literal default's type
+        contradicts the reader's, prefer the default's type.
+
+        Only *scalar* literal defaults (``bool``/``int``/``float``/``str``) are
+        reconciled.  A container default — ``FACTORY`` (``[]``/``{}``) or an
+        immutable ``tuple``/``frozenset`` (which is ``LITERAL``) — carries no
+        element info, so a precise reader type such as ``list[str]`` stays
+        authoritative rather than collapsing to ``list[Any]``/``tuple[Any, ...]``.
+        """
+        if isinstance(default.literal, bool | int | float | str):
+            literal_type = _literal_type(default.literal)
+            if literal_type.base != reader_type.base:
+                return literal_type
+        return reader_type
 
     def _reader_info(self, value: ast.expr) -> _ReaderInfo | None:
         """Extract reader metadata from an env-reader expression, or ``None``.

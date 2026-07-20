@@ -108,6 +108,34 @@ def test_explicit_required_wins_over_default(fields):
     assert f.env_aliases == ("REQUIRED_WITH_DEFAULT",)
 
 
+def test_env_reader_bool_default_types_as_bool(fields):
+    # os.environ.get("FEATURE_TOGGLE", False): the reader yields str, but the
+    # literal bool fallback is the field's semantic type. The annotation must
+    # follow the default (bool), else `FEATURE_TOGGLE: str = False` fails
+    # validation against its own default (regression against edx-platform's
+    # heavy use of this toggle idiom).
+    f = _by_name(fields)["FEATURE_TOGGLE"]
+    assert f.type.base == "bool"
+    assert f.default.strategy is DefaultStrategy.LITERAL
+    assert f.default.literal is False
+    assert f.env_aliases == ("FEATURE_TOGGLE",)
+
+
+def test_env_reader_container_default_keeps_reader_type(tmp_path):
+    # A tuple default is a LITERAL (not FACTORY), but reconciling it would
+    # collapse a precise reader type to tuple[Any, ...]. Only scalar defaults
+    # reconcile; a container/tuple default keeps the reader's type.
+    src = 'import os\nHOSTS = os.environ.get("HOSTS", ("a", "b"))\n'
+    path = tmp_path / "tuple_default_settings.py"
+    path.write_text(src, encoding="utf-8")
+    fields = StaticModuleInspector(
+        "tuple_default_settings", source_file=path
+    ).discover()
+    f = _by_name(fields)["HOSTS"]
+    # str (the reader/env type) is kept — not tuple[Any, ...] from the default.
+    assert f.type.base == "str"
+
+
 def test_get_list_of_str_reader_typed_as_list(fields):
     # mitol's get_list_of_str(...) must be recognised as a list[str] reader,
     # not fall through to Any (which would skip NoDecode/the container
