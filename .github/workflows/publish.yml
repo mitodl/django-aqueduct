@@ -24,14 +24,15 @@ jobs:
       contents: write # push the release tag
       id-token: write # OIDC trusted publishing
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
-          enable-cache: true
+          enable-cache: false
           # This repo does not commit a uv.lock (see ci.yml); key the cache off
           # pyproject.toml so a dependency change still invalidates it.
           cache-dependency-glob: "pyproject.toml"
@@ -50,13 +51,15 @@ jobs:
         # dependency edit); only publish when this version hasn't been
         # tagged/released yet.
         run: |
-          tag="${{ steps.version.outputs.tag }}"
+          tag="${STEPS_VERSION_OUTPUTS_TAG}"
           if git rev-parse "$tag" >/dev/null 2>&1; then
             echo "$tag already exists — nothing new to publish."
             echo "new=false" >> "$GITHUB_OUTPUT"
           else
             echo "new=true" >> "$GITHUB_OUTPUT"
           fi
+        env:
+          STEPS_VERSION_OUTPUTS_TAG: ${{ steps.version.outputs.tag }}
 
       - name: Install dependencies
         if: steps.check.outputs.new == 'true'
@@ -80,6 +83,8 @@ jobs:
         # actually on PyPI" — never left dangling by a failed test/build/publish.
         if: steps.check.outputs.new == 'true'
         run: |
-          tag="${{ steps.version.outputs.tag }}"
+          tag="${STEPS_VERSION_OUTPUTS_TAG}"
           git tag "$tag"
           git push origin "$tag"
+        env:
+          STEPS_VERSION_OUTPUTS_TAG: ${{ steps.version.outputs.tag }}
