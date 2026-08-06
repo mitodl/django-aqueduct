@@ -46,6 +46,13 @@ Homepage = "https://github.com/mitodl/django-aqueduct"
 Repository = "https://github.com/mitodl/django-aqueduct"
 Issues = "https://github.com/mitodl/django-aqueduct/issues"
 
+[tool.uv]
+exclude-newer = "7d"
+required-version = ">=0.9.17"
+
+[tool.uv.exclude-newer-package]
+mitol-django-common = "0d"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
