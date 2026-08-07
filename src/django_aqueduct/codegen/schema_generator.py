@@ -81,12 +81,12 @@ def _annotation_to_json_schema(annotation: str) -> dict[str, Any]:
 
 
 def _literal_or_url_schema(annotation: str) -> dict[str, Any] | None:
-    """Return a schema fragment for an enrichment-produced ``Literal[...]``/``AnyUrl``.
+    """Return a schema fragment for an enrichment-produced ``Literal[...]``/``UrlStr``.
 
     Returns ``None`` for any other annotation (falls through to the static
     lookup table).
     """
-    if annotation == "AnyUrl":
+    if annotation == "UrlStr":
         return {"type": "string", "format": "uri"}
     if annotation.startswith("Literal[") and annotation.endswith("]"):
         import ast  # noqa: PLC0415
@@ -205,7 +205,7 @@ class SchemaGenerator:
         ConfigMap. REDACTED fields (secrets) *are* configurable, so they keep
         their type constraint (usually ``string``) and merely omit ``default``.
         Dict/list literal defaults use genson when available for a richer
-        schema than the annotation alone. ``Literal[...]``/``AnyUrl`` (from
+        schema than the annotation alone. ``Literal[...]``/``UrlStr`` (from
         ``--enrich-runtime``/``--enrich-usage``) map to ``enum``/``format:
         uri``; usage-mined numeric bounds map to draft-07's
         minimum/maximum/exclusiveMinimum/exclusiveMaximum.

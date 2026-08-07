@@ -555,18 +555,38 @@ def test_overridden_output_still_parses(fields):
 # generated file, which also gave up linting the hand-written regions.
 _BROAD_RULESET = "E,F,I,UP,B,C4,PIE,TD,FIX,RUF,SIM,RET,ARG,N"
 
+# The generated file is linted in the *consuming app*, where `django_aqueduct`
+# (imported by a UrlStr-promoted field) is an installed third-party package —
+# so the renderer groups it with pydantic. Run from this repo, ruff's default
+# `src` finds `src/django_aqueduct` and calls it first-party instead, which
+# would report a bogus I001. Point `src` away so the test sees what an app sees.
+_FOREIGN_SRC = 'src=["/nonexistent"]'
+
+
+def _promote_urls(fields):
+    from django_aqueduct.discovery.enrich import apply_url_type_hints  # noqa: PLC0415
+
+    apply_url_type_hints(fields)
+    assert any(f.type.base == "UrlStr" for f in fields), "fixture promoted nothing"
+    return fields
+
 
 @pytest.mark.parametrize(
-    "overridden",
+    ("overridden", "transform"),
     [
-        pytest.param(set(), id="no-overrides"),
+        pytest.param(set(), None, id="no-overrides"),
         # ALT_PRICE is the sole user of `Decimal as Dec` — the F401 case.
-        pytest.param({"ALT_PRICE", "POOL_SIZE"}, id="scalar-overrides"),
+        pytest.param({"ALT_PRICE", "POOL_SIZE"}, None, id="scalar-overrides"),
         # A list field also owns a NoDecode annotation and a container decoder.
-        pytest.param({"CORS_ALLOWED_ORIGINS"}, id="container-override"),
+        pytest.param({"CORS_ALLOWED_ORIGINS"}, None, id="container-override"),
+        # --enrich-url-types adds the `from django_aqueduct import UrlStr` line.
+        pytest.param(set(), _promote_urls, id="url-promotion"),
+        pytest.param({"APP_BASE_URL"}, _promote_urls, id="url-promotion-overridden"),
     ],
 )
-def test_generated_output_is_clean_under_a_broad_ruleset(fields, overridden, tmp_path):
+def test_generated_output_is_clean_under_a_broad_ruleset(
+    fields, overridden, transform, tmp_path
+):
     """Generated output must lint clean in place, with or without overrides.
 
     An app that has to `extend-exclude` the generated file loses lint coverage
@@ -580,6 +600,9 @@ def test_generated_output_is_clean_under_a_broad_ruleset(fields, overridden, tmp
     if ruff is None:  # pragma: no cover - ruff is a dev dependency
         pytest.skip("ruff not on PATH")
 
+    if transform is not None:
+        fields = transform(fields)
+
     target = tmp_path / "settings_model.py"
     target.write_text(
         ModelRenderer(fields, overridden=overridden).render(), encoding="utf-8"
@@ -591,6 +614,8 @@ def test_generated_output_is_clean_under_a_broad_ruleset(fields, overridden, tmp
             "check",
             "--isolated",
             "--no-cache",
+            "--config",
+            _FOREIGN_SRC,
             "--select",
             _BROAD_RULESET,
             "--line-length",
