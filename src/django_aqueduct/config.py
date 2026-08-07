@@ -20,6 +20,7 @@ from pathlib import Path
 
 _VALID_FORMATS = ("python", "jsonschema")
 _VALID_EXTRA = ("allow", "ignore", "forbid")
+_VALID_REPORT_FORMATS = ("table", "json", "markdown")
 
 
 class ConfigError(Exception):
@@ -43,6 +44,9 @@ class AqueductConfig:
     use_plugins: bool = False
     enrich_url_types: bool = False
     attribution_rules: list[tuple[str, str]] = field(default_factory=list)
+    dependency_surface: bool = False
+    dependency_surface_packages: list[str] = field(default_factory=list)
+    dependency_surface_report_format: str = "table"
 
 
 def find_pyproject(start: Path | None = None) -> Path | None:
@@ -120,4 +124,20 @@ def load_config(start: Path | None = None) -> AqueductConfig:
             for r in rules
             if isinstance(r, list | tuple) and len(r) == 2
         ]
+    if isinstance(table.get("dependency_surface"), bool):
+        cfg.dependency_surface = table["dependency_surface"]
+    surface_packages = table.get("dependency_surface_packages")
+    if isinstance(surface_packages, list):
+        cfg.dependency_surface_packages = [
+            stripped for x in surface_packages if (stripped := str(x).strip())
+        ]
+    if "dependency_surface_report_format" in table:
+        report_fmt = table["dependency_surface_report_format"]
+        if report_fmt not in _VALID_REPORT_FORMATS:
+            raise ConfigError(
+                f"[tool.aqueduct] dependency_surface_report_format="
+                f"{report_fmt!r} is invalid; expected one of "
+                f"{', '.join(_VALID_REPORT_FORMATS)}."
+            )
+        cfg.dependency_surface_report_format = report_fmt
     return cfg

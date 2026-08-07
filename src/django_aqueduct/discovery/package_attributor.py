@@ -126,18 +126,18 @@ def _module_to_dist_label(module_name: str) -> str | None:
 def _django_core_names() -> dict[str, str]:
     """Return ``{name: 'django'}`` for every setting in ``global_settings``.
 
-    Args:
-        (none)
+    Delegates the ``global_settings`` import to
+    :func:`~django_aqueduct.discovery.dependency_surface.django_core_names` so
+    attribution and the dependency-surface report share one extraction pass.
 
     Returns:
         Mapping of setting name → ``"django"``.
     """
-    try:
-        import django.conf.global_settings as gs  # noqa: PLC0415
+    from django_aqueduct.discovery.dependency_surface import (  # noqa: PLC0415
+        django_core_names,
+    )
 
-        return {name: LABEL_DJANGO for name in vars(gs) if name.isupper()}
-    except ImportError:
-        return {}
+    return dict.fromkeys(django_core_names(), LABEL_DJANGO)
 
 
 # ---------------------------------------------------------------------------
@@ -150,18 +150,21 @@ def _celery_old_setting_names() -> dict[str, str]:
 
     ``celery.app.defaults._OLD_SETTING_KEYS`` is the authoritative list of
     all Django-style (``CELERY_*`` / ``BROKER_*``) setting names that Celery
-    maintained for the old Django integration.
+    maintained for the old Django integration. The import is delegated to
+    :func:`~django_aqueduct.discovery.dependency_surface.celery_old_setting_names`
+    so attribution and the surface report share one extraction pass.
 
     Returns:
         Mapping of old-style Celery setting name → ``"celery"``.
     """
-    try:
-        from celery.app.defaults import _OLD_SETTING_KEYS  # noqa: PLC0415
+    from django_aqueduct.discovery.dependency_surface import (  # noqa: PLC0415
+        celery_old_setting_names,
+    )
 
-        label = _dist_label("celery")
-        return dict.fromkeys(_OLD_SETTING_KEYS, label)
-    except Exception:  # noqa: BLE001
+    names = celery_old_setting_names()
+    if not names:
         return {}
+    return dict.fromkeys(names, _dist_label("celery"))
 
 
 # ---------------------------------------------------------------------------
@@ -179,13 +182,13 @@ def _drf_names() -> dict[str, str]:
     Returns:
         Mapping with a single entry for the top-level DRF setting.
     """
-    try:
-        import rest_framework.settings  # noqa: F401, PLC0415
+    from django_aqueduct.discovery.dependency_surface import (  # noqa: PLC0415
+        drf_available,
+    )
 
-        label = _dist_label("rest_framework")
-        return {"REST_FRAMEWORK": label}
-    except ImportError:
-        return {}
+    if drf_available():
+        return {"REST_FRAMEWORK": _dist_label("rest_framework")}
+    return {}
 
 
 # ---------------------------------------------------------------------------

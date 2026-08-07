@@ -326,6 +326,84 @@ call, preserving `description`, `required`, and `dev_only` metadata.
 
 ---
 
+## Dependency-surface report
+
+`generate_aqueduct_settings` only sees settings your *project* writes. A setting
+a dependency reads with its own internal default that you never set is invisible
+— there's no field and nothing to decide about. The `report_settings_surface`
+command makes that surface visible: it enumerates, per installed dependency, the
+settings it introduces (name, type, package default) and reconciles each against
+what your project sets.
+
+```bash
+python manage.py report_settings_surface
+python manage.py report_settings_surface --format markdown
+python manage.py report_settings_surface --format json > surface.json
+python manage.py report_settings_surface --packages djangorestframework,celery
+```
+
+Each row is classified as `set` (you define it — value shown when statically
+known), `overridden` (your value differs from the package default), or `unset`,
+with a hint column: `REVIEW` (unset with a meaningful default — a decision to
+make), `OK` (you've decided), or `SECRET` (secret-shaped name, value redacted).
+
+```
+PACKAGE          SETTING                TYPE  DEFAULT  PROJECT            HINT
+django-storages  AWS_S3_FILE_OVERWRITE  bool  True     unset              REVIEW
+django-storages  AWS_QUERYSTRING_AUTH   bool  True     overridden: False  OK
+```
+
+It's a decision aid — it writes no model and adds nothing to your generated
+file, so `generate_aqueduct_settings --check` drift output stays clean. Surface
+data comes from packages that declare a surface (below), plus built-in knowledge
+of Django, DRF, and Celery scoped to your `INSTALLED_APPS`. Output is
+deterministic and secret-shaped names are always redacted.
+
+Configure defaults in `[tool.aqueduct]` (command flags override them):
+
+```toml
+[tool.aqueduct]
+dependency_surface_report_format = "markdown"
+dependency_surface_packages = ["djangorestframework", "celery"]
+```
+
+### Declaring a surface from your own package
+
+Any package can advertise the settings it introduces with the import-light
+`django_aqueduct.surface.Setting` dataclass (stdlib-only — it imports neither
+Django nor pydantic) and one entry point:
+
+```python
+# my_package/aqueduct_surface.py
+from django_aqueduct.surface import UNSET, Setting
+
+
+def surface() -> list[Setting]:
+    return [
+        Setting("MY_PACKAGE_FROM_EMAIL", type="str", default="",
+                description="Envelope From for outbound mail."),
+        Setting("MY_PACKAGE_REPLY_TO", type="str | None", default=None,
+                description="Optional Reply-To address."),
+        Setting("MY_PACKAGE_API_TOKEN", type="str", default=UNSET, required=True,
+                description="Required API token; the project must supply it."),
+    ]
+```
+
+```toml
+# my_package's pyproject.toml
+[project.entry-points."django_aqueduct.settings_surface"]
+my-package = "my_package.aqueduct_surface:surface"
+```
+
+`default=UNSET` means "no default declared" (distinct from `default=None`, where
+the default *is* `None`); pair it with `required=True` when the project must
+supply a value. Declared surfaces are authoritative — they win over built-in
+extractors on a name collision.
+
+See [ADR-0001](docs/architecture/decisions/0001-dependency-surface-discovery.md)
+for the design and rationale. Opt-in emission of unset dependency settings into
+the model is a planned follow-up.
+
 ## Contributing
 
 ```bash
