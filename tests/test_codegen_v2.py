@@ -501,3 +501,122 @@ open('tests/golden/v2_fixture_model.py.golden','w').write(R(S('v2_fixture_settin
 
     golden = pathlib.Path(__file__).parent / "golden" / "v2_fixture_model.py.golden"
     assert ModelRenderer(fields).render() == golden.read_text(encoding="utf-8")
+
+
+# --- overridden= (one class-level assignment per name; ruff PIE794/F811) -----
+
+
+def test_overridden_field_declaration_is_omitted_but_listed(fields):
+    src = ModelRenderer(fields, overridden={"POOL_SIZE"}).render()
+
+    assert "POOL_SIZE: Any = Field" not in src
+    assert "#   POOL_SIZE" in src
+    assert "# ===== declared outside this region =====" in src
+    # Other fields are untouched.
+    assert "MAX_CONNECTIONS: int = Field(default=100)" in src
+
+
+def test_overridden_field_does_not_strand_its_import(fields):
+    """ALT_PRICE is the only user of `Decimal as Dec`; dropping it drops the import."""
+    assert "from decimal import Decimal as Dec" in ModelRenderer(fields).render()
+
+    src = ModelRenderer(fields, overridden={"ALT_PRICE"}).render()
+    assert "Decimal as Dec" not in src
+    assert "Dec(" not in src
+
+
+def test_overridden_container_field_loses_its_decoder(fields):
+    """A dropped list field must not keep a field_validator naming it."""
+    assert "ALLOWED_HOSTS" in ModelRenderer(fields).render()
+
+    src = ModelRenderer(fields, overridden={"ALLOWED_HOSTS"}).render()
+    assert '"ALLOWED_HOSTS"' not in src
+
+
+def test_overriding_an_undiscovered_name_is_not_reported(fields):
+    src = ModelRenderer(fields, overridden={"model_config", "NOT_A_SETTING"}).render()
+    assert "NOT_A_SETTING" not in src
+    assert "# ===== declared outside this region =====" not in src
+
+
+def test_no_overrides_renders_identically(fields):
+    assert ModelRenderer(fields, overridden=set()).render() == (
+        ModelRenderer(fields).render()
+    )
+
+
+def test_overridden_output_still_parses(fields):
+    src = ModelRenderer(fields, overridden={"ALT_PRICE", "POOL_SIZE"}).render()
+    ast.parse(src)
+
+
+# The rulesets ocw-studio / learn-ai / mit-learn select. Each of these groups
+# had a finding in the 0.9.0 adoption that forced a full `extend-exclude` on the
+# generated file, which also gave up linting the hand-written regions.
+_BROAD_RULESET = "E,F,I,UP,B,C4,PIE,TD,FIX,RUF,SIM,RET,ARG,N"
+
+
+@pytest.mark.parametrize(
+    "overridden",
+    [
+        pytest.param(set(), id="no-overrides"),
+        # ALT_PRICE is the sole user of `Decimal as Dec` — the F401 case.
+        pytest.param({"ALT_PRICE", "POOL_SIZE"}, id="scalar-overrides"),
+        # A list field also owns a NoDecode annotation and a container decoder.
+        pytest.param({"CORS_ALLOWED_ORIGINS"}, id="container-override"),
+    ],
+)
+def test_generated_output_is_clean_under_a_broad_ruleset(fields, overridden, tmp_path):
+    """Generated output must lint clean in place, with or without overrides.
+
+    An app that has to `extend-exclude` the generated file loses lint coverage
+    of its own preserved regions too, so a finding on a generated line is a bug
+    in this renderer rather than something the app should suppress.
+    """
+    import shutil  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+
+    ruff = shutil.which("ruff")
+    if ruff is None:  # pragma: no cover - ruff is a dev dependency
+        pytest.skip("ruff not on PATH")
+
+    target = tmp_path / "settings_model.py"
+    target.write_text(
+        ModelRenderer(fields, overridden=overridden).render(), encoding="utf-8"
+    )
+
+    check = subprocess.run(  # noqa: S603
+        [
+            ruff,
+            "check",
+            "--isolated",
+            "--no-cache",
+            "--select",
+            _BROAD_RULESET,
+            "--line-length",
+            "88",
+            str(target),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert check.returncode == 0, check.stdout
+
+    # `ruff format` must stay a no-op, or it fights `--check` drift detection.
+    fmt = subprocess.run(  # noqa: S603
+        [
+            ruff,
+            "format",
+            "--isolated",
+            "--no-cache",
+            "--diff",
+            "--line-length",
+            "88",
+            str(target),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert fmt.returncode == 0, fmt.stdout

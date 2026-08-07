@@ -83,7 +83,9 @@ def test_literal_type_renders_with_import():
         and "Literal" in src.split("from typing import")[1].splitlines()[0]
     )
     assert "ENVIRONMENT: Literal['dev', 'staging']" in src
-    assert "# TODO: refine type" in src
+    assert "# refine type" in src
+    # The tag word is what ruff's TD002/TD003/FIX002 fire on.
+    assert "TODO" not in src
     ast.parse(src)
 
 

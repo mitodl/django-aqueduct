@@ -389,11 +389,16 @@ class Command(BaseCommand):
 
             output = json.dumps(SchemaGenerator(fields).generate(), indent=2)
         else:
+            # --check compares against the on-disk file, so it defers to that
+            # file's overrides regardless of --reset (which only affects a write).
             output = ModelRenderer(
                 fields,
                 class_name=class_name,
                 extra=extra,
                 dict_enrichment=dict_enrichment or None,
+                overridden=self._overridden_names(
+                    output_path, reset=reset and not check
+                ),
             ).render()
 
         if check:
@@ -503,6 +508,34 @@ class Command(BaseCommand):
         )
         apply_usage_enrichment(fields, literals, **kwargs)
         apply_usage_range_enrichment(fields, ranges)
+
+    @staticmethod
+    def _overridden_names(output_path: str, *, reset: bool) -> set[str]:
+        """Return the field names the target file already declares by hand.
+
+        Read *before* rendering, because the renderer has to leave those fields
+        out of the imports region too — not just the field declarations — or
+        dropping the last user of an import strands it as ``F401``. ``--reset``
+        rewrites the file wholesale, so nothing is preserved to defer to.
+        """
+        from pathlib import Path  # noqa: PLC0415
+
+        if reset or output_path == "-":
+            return set()
+        path = Path(output_path)
+        if not path.is_file():
+            return set()
+
+        from django_aqueduct.codegen.regions import (  # noqa: PLC0415
+            RegionError,
+            overridden_field_names,
+        )
+
+        try:
+            return overridden_field_names(path.read_text(encoding="utf-8"))
+        except (OSError, RegionError):
+            # Unreadable or malformed markers: _emit/_check report it properly.
+            return set()
 
     def _emit(
         self, output: str, output_path: str, output_format: str, *, reset: bool

@@ -5,6 +5,52 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0]
+
+### Fixed
+
+- **Regenerating no longer emits a declaration for a field the target file
+  already declares by hand.** The managed-region model invites refining a
+  generated field by re-declaring it in a preserved region, but the writer kept
+  emitting its own declaration too — two class-level assignments of one name,
+  which ruff reports as `PIE794` (duplicate class field) plus `F811`. Because
+  the finding lands on the *generated* line, an app could only silence it by
+  putting a full `extend-exclude` on the file, which also gave up linting the
+  hand-written regions the 0.8.1 format-stability work had just recovered. This
+  dominated the lint fallout across the 0.9.0 adoption: ocw-studio 91 errors
+  (`PIE794` ×37 + `F811` ×3), learn-ai 84 (`PIE794` ×44), mit-learn 68.
+
+  The command now reads the target file before rendering, collects the
+  class-level names declared outside the generated regions
+  (`regions.overridden_field_names`), and renders with
+  `ModelRenderer(overridden=…)`. Those fields are left out of *every* derived
+  region — field declarations, imports, container decoders, URL serializers, and
+  `TypedDict`s — so taking over the last field that used an import doesn't
+  strand it as `F401` either. They are listed by name at the end of the fields
+  region, so the generated output still accounts for every discovered setting
+  and an override is distinguishable from a setting the generator missed.
+  Deleting the hand-written declaration hands the field back to the generator;
+  `--reset` restores all of them. `--check` derives the same set from the same
+  file, so a file with overrides reports in-sync rather than permanent drift.
+
+- **`# TODO: refine type` markers are now spelled `# refine type`.** Ruff's
+  `TD002`/`TD003` (missing author, missing issue link) and `FIX002` fire on the
+  tag word itself, and a generated file carries one per unrefined field — 33 on
+  ocw-studio, 30 on learn-ai, enough on its own to force a file exclude. A
+  per-line `# noqa: TD002,TD003,FIX002` would only move the problem to projects
+  that select `RUF100` but not `TD`/`FIX`, which would then flag the suppression
+  as unused. Dropping the tag satisfies both. **Breaking** for anything grepping
+  the old string.
+
+- **An empty mutable default renders `default_factory=list`/`dict`/`set`
+  instead of `default_factory=lambda: []`.** The useless lambda is ruff
+  `PIE807` (×7 on learn-ai) and identical in effect. Non-empty literals keep the
+  lambda.
+
+Together these make generated output clean under a broad ruleset
+(`E,F,I,UP,B,C4,PIE,TD,FIX,RUF,SIM,RET,ARG,N`) with overrides in place, and
+`ruff format` remains a no-op on it.
+
 ## [0.11.0]
 
 ### Added
