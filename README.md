@@ -116,6 +116,21 @@ Deleting your declaration hands the field back to the generator on the next
 run. `--reset` discards preserved regions entirely, so every field returns to
 generated form.
 
+**The override must be annotated.** A bare `POOL_SIZE = 10` isn't a complete
+pydantic field — it borrows its annotation from the declaration above it — so
+it does *not* suppress the generated one, and both stay in the class:
+
+```python
+    POOL_SIZE = 10        # only overrides the default; generated decl stays
+    POOL_SIZE: int = 10   # a real declaration; generated decl is omitted
+```
+
+Suppressing on a bare assignment would leave the model with an unannotated
+class attribute, which pydantic v2 refuses outright (`PydanticUserError: A
+non-annotated attribute was detected`) — trading a lint finding for a model
+that won't import. So the unannotated form keeps working, at the cost of
+leaving `PIE794`/`F811` on that one field.
+
 ### Step 2b — Optional: enrich types automatically
 
 Static discovery can only see what's written literally in source, so a

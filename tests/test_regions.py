@@ -13,6 +13,18 @@ from django_aqueduct.codegen.regions import (
 )
 
 
+def _exec_module(source: str, name: str):
+    """Import *source* as a module so pydantic actually builds the model class."""
+    import sys
+    import types
+
+    module = types.ModuleType(name)
+    module.__dict__["__name__"] = name
+    exec(compile(source, f"<{name}>", "exec"), module.__dict__)  # noqa: S102
+    sys.modules[name] = module
+    return module
+
+
 def _doc(fields_body: str, preserved_body: str = "    # hand-written") -> str:
     return (
         "# header\n"
@@ -145,9 +157,85 @@ def test_free_form_class_body_declaration_counts_as_an_override() -> None:
     assert overridden_field_names(doc) == {"A"}
 
 
-def test_plain_assignment_override_is_detected() -> None:
+def test_plain_assignment_is_not_treated_as_an_override() -> None:
+    """A bare `A = 5` borrows its annotation from the generated declaration.
+
+    Suppressing that declaration would leave an unannotated class attribute,
+    which pydantic v2 refuses to build a model from — a hard import failure,
+    strictly worse than the duplicate-field lint finding being removed.
+    """
     doc = _doc("    A: int = Field(default=1)", preserved_body="    A = 5")
-    assert overridden_field_names(doc) == {"A"}
+    assert overridden_field_names(doc) == set()
+
+
+def test_model_with_a_plain_assignment_override_still_builds() -> None:
+    """The above, proven against pydantic rather than asserted about it."""
+    from django_aqueduct.codegen.renderer import ModelRenderer
+    from django_aqueduct.discovery.ir import (
+        Default,
+        Provenance,
+        SettingField,
+        TypeRef,
+    )
+
+    fields = [
+        SettingField(
+            name="POOL_SIZE",
+            type=TypeRef("int"),
+            default=Default.literal_(1),
+            provenance=Provenance(source_module="m"),
+        )
+    ]
+    rendered = ModelRenderer(fields).render()
+    existing = rendered.replace(
+        "    # Add @model_validator / @field_validator methods here.",
+        "    POOL_SIZE = 5",
+    )
+
+    names = overridden_field_names(existing)
+    assert names == set(), "a plain assignment must not suppress the declaration"
+
+    merged = merge(existing, ModelRenderer(fields, overridden=names).render())
+    assert "POOL_SIZE: int = Field(default=1)" in merged
+    assert "POOL_SIZE = 5" in merged
+
+    # The real assertion: the merged module imports and the override wins.
+    module = _exec_module(merged, "plain_assign_model")
+    assert module.AqueductSettings().POOL_SIZE == 5
+
+
+def test_annotated_override_suppresses_and_the_model_still_builds() -> None:
+    """The documented pattern: one annotated declaration, model builds, value wins."""
+    from django_aqueduct.codegen.renderer import ModelRenderer
+    from django_aqueduct.discovery.ir import (
+        Default,
+        Provenance,
+        SettingField,
+        TypeRef,
+    )
+
+    fields = [
+        SettingField(
+            name="POOL_SIZE",
+            type=TypeRef("int"),
+            default=Default.literal_(1),
+            provenance=Provenance(source_module="m"),
+        )
+    ]
+    rendered = ModelRenderer(fields).render()
+    existing = rendered.replace(
+        "    # Add @model_validator / @field_validator methods here.",
+        "    POOL_SIZE: int = Field(default=5)",
+    )
+
+    names = overridden_field_names(existing)
+    assert names == {"POOL_SIZE"}
+
+    merged = merge(existing, ModelRenderer(fields, overridden=names).render())
+    assert merged.count("POOL_SIZE:") == 1
+
+    module = _exec_module(merged, "annotated_override_model")
+    assert module.AqueductSettings().POOL_SIZE == 5
 
 
 def test_same_name_in_an_unrelated_class_is_not_an_override() -> None:

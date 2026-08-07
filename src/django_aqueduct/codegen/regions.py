@@ -138,14 +138,24 @@ def overridden_field_names(existing: str) -> set[str]:
     file, losing lint coverage of the hand-written regions too. The caller drops
     the generated declaration instead, leaving exactly one.
 
+    Only *annotated* declarations count. A bare ``NAME = value`` is not a
+    complete pydantic field — it borrows the annotation from the generated
+    declaration above it. Dropping that declaration would leave the model with
+    an unannotated class attribute, which pydantic v2 rejects outright::
+
+        PydanticUserError: A non-annotated attribute was detected:
+        `POOL_SIZE = 5`. All model fields require a type annotation
+
+    That turns a lint finding (two class-level assignments) into a model that
+    won't import at all — strictly worse than the problem being solved. So a
+    plain assignment is left alone: its generated declaration stays, keeping the
+    model valid, and the ``PIE794``/``F811`` pair remains for that one field.
+    Annotate the override to have it suppressed.
+
     Only the class that encloses the ``fields`` region is inspected, so helper
     classes elsewhere in the module can reuse a settings name freely. A file
     that doesn't parse yields no names — regenerating over a half-edited file
     should not also silently drop managed declarations.
-
-    The result is every such name, including the renderer's own unfenced
-    ``model_config`` line; the renderer intersects it with the names it actually
-    discovered, so nothing here needs to know which are really settings.
     """
     fields_span = _region_span(existing, "fields")
     if fields_span is None:
@@ -169,16 +179,13 @@ def overridden_field_names(existing: str) -> set[str]:
 
     names: set[str] = set()
     for stmt in cls.body:
-        targets: list[ast.expr] = []
-        if isinstance(stmt, ast.AnnAssign):
-            targets = [stmt.target]
-        elif isinstance(stmt, ast.Assign):
-            targets = list(stmt.targets)
-        else:
+        # ast.Assign (`NAME = value`) is deliberately not handled — see above.
+        if not isinstance(stmt, ast.AnnAssign):
             continue
         if any(o <= stmt.lineno <= c for o, c in generated_spans):
             continue
-        names.update(t.id for t in targets if isinstance(t, ast.Name))
+        if isinstance(stmt.target, ast.Name):
+            names.add(stmt.target.id)
     return names
 
 

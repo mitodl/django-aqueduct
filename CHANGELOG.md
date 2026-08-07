@@ -33,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--reset` restores all of them. `--check` derives the same set from the same
   file, so a file with overrides reports in-sync rather than permanent drift.
 
+  Only an **annotated** override suppresses. A bare `NAME = value` borrows its
+  annotation from the generated declaration, so dropping that declaration would
+  leave an unannotated class attribute — which pydantic v2 rejects at class
+  creation (`PydanticUserError: A non-annotated attribute was detected`),
+  trading a lint finding for a model that won't import. A plain assignment
+  therefore keeps its generated declaration (and that field's `PIE794`/`F811`).
+
   An override is recognised anywhere outside a generated region, including
   *above* the fields region. The enclosing class is located from the region's
   opening marker: `ClassDef.end_lineno` stops at the last statement and region
