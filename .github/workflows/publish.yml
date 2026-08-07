@@ -81,10 +81,17 @@ jobs:
       - name: Tag the release
         # Only after a successful publish, so a tag always means "this version is
         # actually on PyPI" — never left dangling by a failed test/build/publish.
+        #
+        # Created through the API rather than `git push`: the checkout above sets
+        # `persist-credentials: false` (zizmor), so the local repo has no
+        # push credential and `git push origin` fails with
+        # "could not read Username for 'https://github.com'" — which is exactly
+        # how v0.11.0 reached PyPI untagged.
         if: steps.check.outputs.new == 'true'
         run: |
-          tag="${STEPS_VERSION_OUTPUTS_TAG}"
-          git tag "$tag"
-          git push origin "$tag"
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f "ref=refs/tags/${STEPS_VERSION_OUTPUTS_TAG}" \
+            -f "sha=${GITHUB_SHA}"
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           STEPS_VERSION_OUTPUTS_TAG: ${{ steps.version.outputs.tag }}
