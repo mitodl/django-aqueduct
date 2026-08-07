@@ -20,10 +20,17 @@ so ``ruff format`` is a no-op on generated regions and doesn't fight
 ``--check``. There is no blanket ``# ruff: noqa``; a handful of long,
 human-authored strings (descriptions, usage-mined comments) can still exceed
 the line length, and those specific lines get a targeted
-``# noqa: E501`` instead. If your project selects rules beyond the ~9 groups
-this was validated against (e.g. ``Q``, ``COM``, ``ANN``, ``D`` on generated
-code), the fallback is still to ``extend-exclude`` the generated file (or
-just the regions your linter can't be taught to skip) in ``[tool.ruff]``.
+``# noqa: E501`` instead.
+
+Validated in CI against ``E,F,I,UP,B,C4,PIE,TD,FIX,RUF,SIM,RET,ARG,N`` — the
+union of what the mitodl apps select — both with and without hand-written
+overrides (see ``test_generated_output_is_clean_under_a_broad_ruleset``). A
+finding on a generated line is a bug here rather than something the consuming
+app should suppress, because an app that has to ``extend-exclude`` the file
+loses lint coverage of its own preserved regions too. If your project selects
+rules beyond that set (e.g. ``Q``, ``COM``, ``ANN``, ``D`` on generated code),
+the fallback is still to ``extend-exclude`` the generated file (or just the
+regions your linter can't be taught to skip) in ``[tool.ruff]``.
 """
 
 from __future__ import annotations
@@ -39,6 +46,8 @@ from django_aqueduct.discovery.ir import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from django_aqueduct.codegen.dict_schema import TypedDictDef
 
 _COMMENT_BLOCK = """\
@@ -249,6 +258,9 @@ def _render_collection_wrapped(value: object, indent: str, extra: int = 0) -> st
 
 _LITERAL_KWARG_PREFIXES = ("default_factory=lambda: ", "default=")
 
+# Empty mutable defaults whose factory is just the builtin constructor.
+_EMPTY_FACTORY_BUILTINS: dict[type, str] = {list: "list", dict: "dict", set: "set"}
+
 
 def _reflow_long_literal_kwarg(rendered: str, literal: object) -> str:
     """Re-explode an overlong ``default=``/``default_factory=lambda: `` line.
@@ -326,6 +338,12 @@ def _render_default_expr(f: SettingField) -> tuple[str, str]:
     if d.strategy is DefaultStrategy.EXPR:
         return f"default_factory=lambda: {d.expr}", ""
     if d.strategy is DefaultStrategy.FACTORY:
+        # An *empty* mutable default gets the builtin itself as the factory:
+        # `lambda: []` is a useless lambda (ruff PIE807) and identical in
+        # effect to `list`. Non-empty literals still need the lambda.
+        builtin = _EMPTY_FACTORY_BUILTINS.get(type(d.literal))
+        if builtin is not None and not d.literal:
+            return f"default_factory={builtin}", ""
         return f"default_factory=lambda: {_render_literal(d.literal)}", ""
     # LITERAL
     return f"default={_render_literal(d.literal)}", ""
@@ -401,7 +419,14 @@ def _render_field(
         parts.append(f"description={render_str_literal(f.description)}")
 
     if f.type.needs_refinement:
-        comment = comment or "  # TODO: refine type"
+        # Deliberately not spelled "TODO". Ruff's TD002/TD003 (missing author,
+        # missing issue link) and FIX002 fire on the *tag word*, and a
+        # generated file can carry dozens of these — enough that apps selecting
+        # those rules had to exclude the whole file. A per-line suppression
+        # naming those three codes only moves the problem: apps that select
+        # RUF100 but not TD/FIX would then flag the suppression as unused.
+        # Dropping the tag satisfies both.
+        comment = comment or "  # refine type"
     if not f.constraints.is_empty():
         comment = (
             f"{comment}  # usage-mined bound(s) — confirm before trusting"
@@ -454,6 +479,7 @@ class ModelRenderer:
         class_name: str = "AqueductSettings",
         extra: str = "allow",
         dict_enrichment: dict[str, tuple[str, list[TypedDictDef]]] | None = None,
+        overridden: Iterable[str] | None = None,
     ) -> None:
         """Store the fields, class name, and model ``extra`` strictness.
 
@@ -471,10 +497,25 @@ class ModelRenderer:
                 refine fields (``DERIVED``/``Any``) whose default was never
                 a literal dict, which the renderer alone cannot do without
                 importing the target module.
+            overridden: Names the target file already declares outside the
+                generated regions (see
+                :func:`~django_aqueduct.codegen.regions.overridden_field_names`).
+                Their declarations are omitted so each name keeps exactly one
+                class-level assignment — two would be a real ruff ``PIE794`` /
+                ``F811`` finding on the *generated* line, which an app can only
+                silence by excluding the whole file, losing lint coverage of its
+                own preserved regions too. Omitted fields are excluded from
+                every other derived region as well (imports, container decoders,
+                URL serializers, ``TypedDict``s), so dropping the last user of
+                an import doesn't strand it as ``F401``.
         """
         if extra not in ("allow", "ignore", "forbid"):
             raise ValueError(f"extra must be allow/ignore/forbid, got {extra!r}")
-        self._fields = fields
+        declared = {f.name for f in fields}
+        # An override naming a setting this run didn't discover has nothing to
+        # suppress; keep it out so it isn't reported as omitted.
+        self._overridden = frozenset(n for n in (overridden or ()) if n in declared)
+        self._fields = [f for f in fields if f.name not in self._overridden]
         self._class_name = class_name
         self._dict_enrichment = dict_enrichment or {}
         self._extra = extra
@@ -525,6 +566,26 @@ class ModelRenderer:
                     )
                 )
         return out
+
+    def _render_override_note(self) -> list[str]:
+        """Account for fields whose declaration was omitted (see ``overridden``).
+
+        Listed rather than silently dropped, so the generated region still names
+        every discovered setting and a reader can tell an override from a
+        setting the generator missed. One name per line keeps the block short of
+        the line limit whatever the setting is called.
+        """
+        if not self._overridden:
+            return []
+        return [
+            "    # ===== declared outside this region =====",
+            "    # These settings were discovered, but this class already",
+            "    # declares them elsewhere in the file. Their generated",
+            "    # declarations are omitted so each name has exactly one",
+            "    # class-level assignment. Delete the hand-written one to hand",
+            "    # a setting back to the generator.",
+            *(f"    #   {name}" for name in sorted(self._overridden)),
+        ]
 
     def _container_fields(
         self, enriched: dict[str, str]
@@ -656,7 +717,7 @@ class ModelRenderer:
         seen: set[str] = set()
 
         for name, (annotation, new_defs) in self._dict_enrichment.items():
-            if annotation == "dict[str, Any]":
+            if annotation == "dict[str, Any]" or name in self._overridden:
                 continue
             if any(d.class_name in seen for d in new_defs):
                 continue
@@ -786,6 +847,7 @@ class ModelRenderer:
         lines.append("")
         lines.append(region_open("generated", "fields"))
         lines.extend(field_lines)
+        lines.extend(self._render_override_note())
         lines.append(region_close("generated", "fields"))
         lines.append("")
         if list_fields or dict_fields:

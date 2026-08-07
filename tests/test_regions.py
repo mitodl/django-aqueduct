@@ -9,6 +9,7 @@ from django_aqueduct.codegen.regions import (
     check_drift,
     generated_regions,
     merge,
+    overridden_field_names,
 )
 
 
@@ -118,3 +119,52 @@ def test_check_drift_ignores_preserved_changes() -> None:
     regenerated = _doc("    A: int = 1", preserved_body="    # v2 IGNORED")
     # only preserved region differs → still in sync
     assert check_drift(existing, regenerated).in_sync is True
+
+
+# --- overridden_field_names (feeds ModelRenderer(overridden=...)) ------------
+
+
+def test_override_in_preserved_region_is_detected() -> None:
+    doc = _doc(
+        "    A: int = Field(default=1)\n    B: str = Field(default='x')",
+        preserved_body="    A: PositiveInt = Field(default=5)",
+    )
+    assert overridden_field_names(doc) == {"A"}
+
+
+def test_generated_declarations_are_not_overrides() -> None:
+    assert overridden_field_names(_doc("    A: int = Field(default=1)")) == set()
+
+
+def test_free_form_class_body_declaration_counts_as_an_override() -> None:
+    """An override need not sit in a preserved region — anywhere outside counts."""
+    doc = (
+        _doc("    A: int = Field(default=1)").rstrip("\n")
+        + "\n    A: PositiveInt = Field(default=5)\n"
+    )
+    assert overridden_field_names(doc) == {"A"}
+
+
+def test_plain_assignment_override_is_detected() -> None:
+    doc = _doc("    A: int = Field(default=1)", preserved_body="    A = 5")
+    assert overridden_field_names(doc) == {"A"}
+
+
+def test_same_name_in_an_unrelated_class_is_not_an_override() -> None:
+    doc = (
+        _doc("    A: int = Field(default=1)").rstrip("\n")
+        + "\n\n\nclass Helper:\n    A: int = 9\n"
+    )
+    assert overridden_field_names(doc) == set()
+
+
+def test_unparseable_file_reports_no_overrides() -> None:
+    doc = (
+        _doc("    A: int = Field(default=1)", preserved_body="    A: int = 5")
+        + "\ndef broken(:\n"
+    )
+    assert overridden_field_names(doc) == set()
+
+
+def test_file_without_a_fields_region_reports_no_overrides() -> None:
+    assert overridden_field_names("class S:\n    A: int = 1\n") == set()

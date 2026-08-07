@@ -18,6 +18,7 @@ read-only drift check for CI.
 
 from __future__ import annotations
 
+import ast
 import difflib
 import re
 from collections.abc import Iterator
@@ -87,6 +88,72 @@ def generated_regions(text: str) -> dict[str, str]:
     return out
 
 
+def _region_span(text: str, region_id: str) -> tuple[int, int] | None:
+    """Return the ``(open_idx, close_idx)`` of one generated region, if present."""
+    for kind, rid, o_idx, c_idx in _iter_marked_regions(text):
+        if kind == "generated" and rid == region_id:
+            return o_idx, c_idx
+    return None
+
+
+def overridden_field_names(existing: str) -> set[str]:
+    """Return field names the settings class declares *outside* a generated region.
+
+    The managed-region model invites refining a generated field by re-declaring
+    it — with a narrower type, a different default, or extra validation — in a
+    preserved region. Re-emitting the generated declaration as well leaves two
+    class-level assignments of the same name in one class body, which is a
+    genuine lint finding (ruff ``PIE794`` / ``F811``) and not one a project can
+    reasonably silence per-line: it fires on the *generated* declaration, so an
+    app whose ruleset selects those rules is pushed into excluding the whole
+    file, losing lint coverage of the hand-written regions too. The caller drops
+    the generated declaration instead, leaving exactly one.
+
+    Only the class that encloses the ``fields`` region is inspected, so helper
+    classes elsewhere in the module can reuse a settings name freely. A file
+    that doesn't parse yields no names — regenerating over a half-edited file
+    should not also silently drop managed declarations.
+
+    The result is every such name, including the renderer's own unfenced
+    ``model_config`` line; the renderer intersects it with the names it actually
+    discovered, so nothing here needs to know which are really settings.
+    """
+    fields_span = _region_span(existing, "fields")
+    if fields_span is None:
+        return set()
+    try:
+        tree = ast.parse(existing)
+    except SyntaxError:
+        return set()
+
+    # ast linenos are 1-based; region indices are 0-based line offsets.
+    open_line, close_line = fields_span[0] + 1, fields_span[1] + 1
+    generated_spans = [
+        (o + 1, c + 1)
+        for kind, _rid, o, c in _iter_marked_regions(existing)
+        if kind == "generated"
+    ]
+
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if not (node.lineno < open_line <= close_line <= (node.end_lineno or 0)):
+            continue
+        for stmt in node.body:
+            targets: list[ast.expr] = []
+            if isinstance(stmt, ast.AnnAssign):
+                targets = [stmt.target]
+            elif isinstance(stmt, ast.Assign):
+                targets = list(stmt.targets)
+            else:
+                continue
+            if any(o <= stmt.lineno <= c for o, c in generated_spans):
+                continue
+            names.update(t.id for t in targets if isinstance(t, ast.Name))
+    return names
+
+
 def merge(existing: str, generated: str) -> str:
     """Return *existing* with each generated region's body replaced from *generated*.
 
@@ -94,6 +161,11 @@ def merge(existing: str, generated: str) -> str:
     Raises :class:`RegionError` if *existing* lacks a generated region that
     *generated* provides (the file was hand-edited to drop a marker — refuse to
     silently lose managed output; the caller can offer ``--reset``).
+
+    This is a pure text merge. Dropping the declarations *existing* overrides is
+    not done here: it has to happen while rendering, so the ``imports`` region
+    is computed from the same reduced field set (see
+    :func:`overridden_field_names` and ``ModelRenderer(overridden=...)``).
     """
     new_bodies = generated_regions(generated)
     existing_lines = existing.splitlines(keepends=True)
@@ -164,6 +236,10 @@ def check_drift(existing: str, generated: str) -> DriftResult:
     Preserved regions and free-form code are ignored. Returns a
     :class:`DriftResult` whose ``diff`` is a unified diff of only the managed
     regions that differ (or are missing).
+
+    *generated* must have been rendered with the same ``overridden=`` set the
+    write path uses, or a file with a hand-written override reports permanent
+    drift; the management command derives both from the on-disk file.
     """
     old = generated_regions(existing)
     new = generated_regions(generated)

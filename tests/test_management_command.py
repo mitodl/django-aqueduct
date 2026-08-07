@@ -529,3 +529,75 @@ def test_literal_max_values_flag_lowers_threshold(tmp_path, capsys: _Capsys) -> 
     out = capsys.readouterr().out
     assert "LOG_LEVEL: Literal[" not in out
     assert 'LOG_LEVEL: str = Field(\n        default="INFO"' in out
+
+
+# ------------------------------------------------------------------ #
+# Hand-written overrides (ruff PIE794/F811)                           #
+# ------------------------------------------------------------------ #
+
+
+def _generate(output_file: pathlib.Path, **kwargs: object) -> str:
+    call_command(
+        "generate_aqueduct_settings",
+        modules="v2_fixture_settings",
+        output=str(output_file),
+        **kwargs,
+    )
+    return output_file.read_text()
+
+
+def _override(content: str, declaration: str) -> str:
+    """Insert *declaration* into the preserved region, as a maintainer would."""
+    marker = "    # <<< aqueduct:preserved:validators"
+    assert marker in content
+    return content.replace(marker, f"    {declaration}\n{marker}")
+
+
+def test_regeneration_drops_a_hand_overridden_declaration(
+    tmp_path: pathlib.Path,
+) -> None:
+    out = tmp_path / "settings_model.py"
+    first = _generate(out)
+    assert "POOL_SIZE: Any = Field" in first
+
+    out.write_text(_override(first, "POOL_SIZE: int = Field(default=10)"))
+    second = _generate(out)
+
+    # Exactly one class-level assignment of POOL_SIZE survives — the hand-written
+    # one. Two would be ruff PIE794 + F811 on the generated line.
+    assert second.count("POOL_SIZE:") == 1
+    assert "POOL_SIZE: int = Field(default=10)" in second
+    assert "#   POOL_SIZE" in second
+    ast.parse(second)
+
+
+def test_check_is_in_sync_after_writing_over_an_override(
+    tmp_path: pathlib.Path, capsys: _Capsys
+) -> None:
+    """--check must agree with what the write path produced, or CI never goes green."""
+    out = tmp_path / "settings_model.py"
+    out.write_text(_override(_generate(out), "POOL_SIZE: int = Field(default=10)"))
+    _generate(out)
+    capsys.readouterr()
+
+    _generate(out, check=True)
+    assert "is up to date" in capsys.readouterr().out
+
+
+def test_reset_restores_a_generated_declaration(tmp_path: pathlib.Path) -> None:
+    """--reset discards preserved regions, so the field goes back to the generator."""
+    out = tmp_path / "settings_model.py"
+    out.write_text(_override(_generate(out), "POOL_SIZE: int = Field(default=10)"))
+    assert "POOL_SIZE: Any = Field" not in _generate(out)
+
+    assert "POOL_SIZE: Any = Field" in _generate(out, reset=True)
+
+
+def test_removing_an_override_hands_the_field_back(tmp_path: pathlib.Path) -> None:
+    out = tmp_path / "settings_model.py"
+    out.write_text(_override(_generate(out), "POOL_SIZE: int = Field(default=10)"))
+    overridden = _generate(out)
+    assert "POOL_SIZE: Any = Field" not in overridden
+
+    out.write_text(overridden.replace("    POOL_SIZE: int = Field(default=10)\n", ""))
+    assert "POOL_SIZE: Any = Field" in _generate(out)

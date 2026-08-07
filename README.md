@@ -63,7 +63,7 @@ under section comments by source module.
 
 Open `settings_model.py` and:
 
-- Fix any `# TODO: refine type` annotations
+- Fix any `# refine type` annotations
 - Add `model_validator` methods to derive complex objects from primitives:
 
 ```python
@@ -82,13 +82,47 @@ class AqueductSettings(BaseSettings):
         return self
 ```
 
+#### Overriding a generated field
+
+To refine one field — a narrower type, a different default, extra validation —
+re-declare it in the `# >>> aqueduct:preserved:validators` region (or anywhere
+else outside a generated region):
+
+```python
+    # >>> aqueduct:preserved:validators
+    POOL_SIZE: int = Field(default=10, gt=0)
+    # <<< aqueduct:preserved:validators
+```
+
+Regeneration notices the hand-written declaration and **omits its own**, so the
+class keeps exactly one class-level assignment per name — two would be a real
+`PIE794`/`F811` finding on the generated line, and one a project can't silence
+without excluding the whole file. Omitted fields drop out of every derived
+region too (imports, container decoders, URL serializers, `TypedDict`s), so
+taking over the last field that used an import doesn't strand it as `F401`.
+They're listed at the end of the fields region:
+
+```python
+    # ===== declared outside this region =====
+    # These settings were discovered, but this class already
+    # declares them elsewhere in the file. Their generated
+    # declarations are omitted so each name has exactly one
+    # class-level assignment. Delete the hand-written one to hand
+    # a setting back to the generator.
+    #   POOL_SIZE
+```
+
+Deleting your declaration hands the field back to the generator on the next
+run. `--reset` discards preserved regions entirely, so every field returns to
+generated form.
+
 ### Step 2b — Optional: enrich types automatically
 
 Static discovery can only see what's written literally in source, so a
 computed value (`DATABASES = dj_database_url.parse(...)`) or a value that's
 only ever one of a handful of options (`ENVIRONMENT` always being
 `"dev"`/`"staging"`/`"production"`) shows up as `Any`/`str` with a
-`# TODO: refine type` — the kind of thing you'd otherwise only discover by
+`# refine type` — the kind of thing you'd otherwise only discover by
 trial-and-error or reading the whole codebase. Two optional passes recover it
 automatically, refining *types only* (never a field's default, required-ness,
 or env aliases):
@@ -117,7 +151,7 @@ python manage.py generate_aqueduct_settings \
   — and promotes closed-value-set fields to `Literal[...]` and range-checked
   numeric fields to `Field(gt=/ge=/lt=/le=)`.
 - Both are heuristics, not proofs — the renderer marks every result
-  `# TODO: refine type` (`Literal`/`AnyUrl`) or a `# usage-mined bound(s) —
+  `# refine type` (`Literal`/`AnyUrl`) or a `# usage-mined bound(s) —
   confirm before trusting` comment (ranges) so you review before trusting
   the inferred constraint in production; the scanned code only reflects the
   values/bounds it happens to check, not necessarily the field's full valid
@@ -289,7 +323,7 @@ applies hundreds of lines of post-processing. With `django-aqueduct`:
        --output lms/envs/settings_model.py
    ```
 
-2. **Review** `settings_model.py` — fix `# TODO: refine type` entries,
+2. **Review** `settings_model.py` — fix `# refine type` entries,
    move `derive_settings` logic into `@model_validator` methods.
 
 3. **Replace** `lms/envs/production.py`:
