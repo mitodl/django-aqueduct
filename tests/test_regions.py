@@ -168,3 +168,87 @@ def test_unparseable_file_reports_no_overrides() -> None:
 
 def test_file_without_a_fields_region_reports_no_overrides() -> None:
     assert overridden_field_names("class S:\n    A: int = 1\n") == set()
+
+
+def test_override_before_the_fields_region_with_no_trailing_statements() -> None:
+    """The class is found from the region's opening marker, not its closing one.
+
+    `ClassDef.end_lineno` stops at the last *statement*, and every region marker
+    is a comment. With the override above the fields region and nothing after it
+    but comment-only regions — which is what the renderer emits for a model with
+    no container decoders or URL serializers — `end_lineno` lands on the last
+    generated field, before the closing marker. Keying off the closing marker
+    rejected the settings class here and let regeneration re-emit the duplicate.
+    """
+    doc = (
+        "class S(BaseSettings):\n"
+        '    model_config = SettingsConfigDict(env_prefix="")\n'
+        "\n"
+        "    POOL_SIZE: int = Field(default=10)\n"
+        "\n"
+        "    # >>> aqueduct:generated:fields\n"
+        "    POOL_SIZE: Any = Field(default=None)\n"
+        '    SITE_NAME: str = Field(default="x")\n'
+        "    # <<< aqueduct:generated:fields\n"
+        "\n"
+        "    # >>> aqueduct:preserved:validators\n"
+        "    # Add @model_validator / @field_validator methods here.\n"
+        "    # <<< aqueduct:preserved:validators\n"
+    )
+    assert "POOL_SIZE" in overridden_field_names(doc)
+    # The generated declaration itself is still not an override.
+    assert "SITE_NAME" not in overridden_field_names(doc)
+
+
+def test_override_before_fields_region_is_dropped_end_to_end() -> None:
+    """The above, through merge(): exactly one class-level POOL_SIZE survives."""
+    from django_aqueduct.codegen.renderer import ModelRenderer
+    from django_aqueduct.discovery.ir import (
+        Default,
+        Provenance,
+        SettingField,
+        TypeRef,
+    )
+
+    fields = [
+        SettingField(
+            name=name,
+            type=TypeRef("int"),
+            default=Default.literal_(1),
+            provenance=Provenance(source_module="m"),
+        )
+        for name in ("POOL_SIZE", "SITE_NAME")
+    ]
+    first = ModelRenderer(fields).render()
+    # Hand-place the override above the fields region.
+    existing = first.replace(
+        "    # >>> aqueduct:generated:fields",
+        "    POOL_SIZE: int = Field(default=10)\n\n    # >>> aqueduct:generated:fields",
+    )
+
+    names = overridden_field_names(existing)
+    assert "POOL_SIZE" in names
+
+    merged = merge(existing, ModelRenderer(fields, overridden=names).render())
+    assert merged.count("POOL_SIZE:") == 1
+    assert "POOL_SIZE: int = Field(default=10)" in merged
+    assert "SITE_NAME: int = Field(default=1)" in merged
+
+
+def test_helper_class_above_the_region_is_not_mistaken_for_the_model() -> None:
+    """The innermost qualifying class wins, not merely the nearest-preceding one."""
+    doc = (
+        "class S(BaseSettings):\n"
+        "    POOL_SIZE: int = Field(default=10)\n"
+        "\n"
+        "    class Helper:\n"
+        "        SITE_NAME: str = 'nested'\n"
+        "\n"
+        "    # >>> aqueduct:generated:fields\n"
+        "    POOL_SIZE: Any = Field(default=None)\n"
+        "    # <<< aqueduct:generated:fields\n"
+    )
+    names = overridden_field_names(doc)
+    assert "POOL_SIZE" in names
+    # Helper closes before the region, so its members are not overrides.
+    assert "SITE_NAME" not in names

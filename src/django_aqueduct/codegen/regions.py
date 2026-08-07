@@ -96,6 +96,35 @@ def _region_span(text: str, region_id: str) -> tuple[int, int] | None:
     return None
 
 
+def _enclosing_class(tree: ast.Module, open_line: int) -> ast.ClassDef | None:
+    """Return the class whose body contains the ``fields`` region marker.
+
+    Identified by the region's *opening* marker, never its closing one.
+    ``ClassDef.end_lineno`` stops at the last syntactic statement, and every
+    region marker is a comment — so when nothing after the fields region is a
+    statement (no container decoders, no URL serializers, a preserved region
+    holding only the placeholder comments), ``end_lineno`` lands on the last
+    generated field, *before* the closing marker. Requiring the class to span
+    the closing marker would reject the settings class outright in that layout,
+    silently disabling override suppression exactly where an override is most
+    likely: a declaration placed above the fields region, which the README
+    explicitly permits ("anywhere else outside a generated region").
+
+    The opening marker has no such problem: any class body containing the
+    region necessarily starts before it, and a class that closed earlier cannot
+    reach it. Among the classes that qualify, the innermost (latest-starting)
+    one wins, so a helper class nested above the region isn't mistaken for the
+    settings class.
+    """
+    candidates = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef)
+        and node.lineno < open_line <= (node.end_lineno or 0)
+    ]
+    return max(candidates, key=lambda n: n.lineno) if candidates else None
+
+
 def overridden_field_names(existing: str) -> set[str]:
     """Return field names the settings class declares *outside* a generated region.
 
@@ -127,30 +156,29 @@ def overridden_field_names(existing: str) -> set[str]:
         return set()
 
     # ast linenos are 1-based; region indices are 0-based line offsets.
-    open_line, close_line = fields_span[0] + 1, fields_span[1] + 1
+    open_line = fields_span[0] + 1
     generated_spans = [
         (o + 1, c + 1)
         for kind, _rid, o, c in _iter_marked_regions(existing)
         if kind == "generated"
     ]
 
+    cls = _enclosing_class(tree, open_line)
+    if cls is None:
+        return set()
+
     names: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef):
+    for stmt in cls.body:
+        targets: list[ast.expr] = []
+        if isinstance(stmt, ast.AnnAssign):
+            targets = [stmt.target]
+        elif isinstance(stmt, ast.Assign):
+            targets = list(stmt.targets)
+        else:
             continue
-        if not (node.lineno < open_line <= close_line <= (node.end_lineno or 0)):
+        if any(o <= stmt.lineno <= c for o, c in generated_spans):
             continue
-        for stmt in node.body:
-            targets: list[ast.expr] = []
-            if isinstance(stmt, ast.AnnAssign):
-                targets = [stmt.target]
-            elif isinstance(stmt, ast.Assign):
-                targets = list(stmt.targets)
-            else:
-                continue
-            if any(o <= stmt.lineno <= c for o, c in generated_spans):
-                continue
-            names.update(t.id for t in targets if isinstance(t, ast.Name))
+        names.update(t.id for t in targets if isinstance(t, ast.Name))
     return names
 
 

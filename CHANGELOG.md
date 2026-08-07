@@ -33,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--reset` restores all of them. `--check` derives the same set from the same
   file, so a file with overrides reports in-sync rather than permanent drift.
 
+  An override is recognised anywhere outside a generated region, including
+  *above* the fields region. The enclosing class is located from the region's
+  opening marker: `ClassDef.end_lineno` stops at the last statement and region
+  markers are comments, so for a model whose fields region is followed only by
+  comment-only regions (no container decoders, no URL serializers), keying off
+  the closing marker would fail to find the class at all.
+
 - **`# TODO: refine type` markers are now spelled `# refine type`.** Ruff's
   `TD002`/`TD003` (missing author, missing issue link) and `FIX002` fire on the
   tag word itself, and a generated file carries one per unrefined field — 33 on
