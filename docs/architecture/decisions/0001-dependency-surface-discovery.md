@@ -80,8 +80,10 @@ what the project sets, and present the result as a **report**. Specifically:
    - Secret-safe: package defaults are library defaults (non-secret), but names
      are still run through `discovery/secrets.py`; secret-shaped names are
      redacted (value never printed).
-   - Deterministic: stable sort by `(dist, name)`; no environment or machine
-     reads; a determinism test asserts two runs match.
+   - Deterministic: stable sort by `(dist, name)`; declared-surface entry points
+     are loaded in sorted order, since `importlib.metadata` guarantees none and
+     load order decides the winner of a name collision; no environment or
+     machine reads; a determinism test asserts two runs match.
 
 ## Consequences
 

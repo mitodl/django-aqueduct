@@ -29,6 +29,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _REDACTED = "(redacted)"
 _REQUIRED = "(required)"
+_NO_DEFAULT = "(no default)"
 _MAX_VALUE_LEN = 48
 
 _COLUMNS = ("PACKAGE", "SETTING", "TYPE", "DEFAULT", "PROJECT", "HINT")
@@ -43,7 +44,9 @@ class ReportRow:
         setting: Setting name (``REST_FRAMEWORK.<KEY>`` for nested keys).
         type: The declared/known type-annotation string.
         package_default: Rendered package default (``(required)`` when the
-            package declares none, ``(redacted)`` for secret-shaped names).
+            package declares none and demands one, ``(no default)`` when it
+            declares none without requiring one, ``(redacted)`` for
+            secret-shaped names).
         project_status: ``"set"``, ``"unset"``, or ``"overridden"``.
         project_value: Rendered project value, ``"unset"``, or ``(redacted)``.
         hint: ``"OK"`` (project decided), ``"REVIEW"`` (unset with a meaningful
@@ -68,11 +71,16 @@ def _short(text: str, limit: int = _MAX_VALUE_LEN) -> str:
 
 
 def _render_package_default(setting: Setting, *, secret: bool) -> str:
-    """Render a package default for display."""
+    """Render a package default for display.
+
+    ``UNSET`` only means "no default declared" — which a best-effort extractor
+    can produce without the setting being required — so only a setting that
+    actually declares ``required=True`` renders as ``(required)``.
+    """
     if secret:
         return _REDACTED
     if not setting.has_default:
-        return _REQUIRED
+        return _REQUIRED if setting.required else _NO_DEFAULT
     return _short(repr(setting.default))
 
 
@@ -189,25 +197,24 @@ def render_table(rows: Sequence[ReportRow]) -> str:
 
 
 def render_markdown(rows: Sequence[ReportRow]) -> str:
-    """Render rows as a GitHub-flavoured Markdown table."""
+    """Render rows as a GitHub-flavoured Markdown table.
+
+    Cell values are pipe-escaped: type strings are union-annotation strings
+    (``"str | None"``), and a bare ``|`` would open an extra column.
+    """
     header = "| " + " | ".join(_COLUMNS) + " |"
     sep = "| " + " | ".join("---" for _ in _COLUMNS) + " |"
     lines = [header, sep]
     for r in rows:
-        lines.append(
-            "| "
-            + " | ".join(
-                (
-                    r.package,
-                    r.setting,
-                    r.type,
-                    r.package_default,
-                    _project_cell(r),
-                    r.hint,
-                )
-            )
-            + " |"
+        cells = (
+            r.package,
+            r.setting,
+            r.type,
+            r.package_default,
+            _project_cell(r),
+            r.hint,
         )
+        lines.append("| " + " | ".join(c.replace("|", r"\|") for c in cells) + " |")
     return "\n".join(lines) + "\n"
 
 

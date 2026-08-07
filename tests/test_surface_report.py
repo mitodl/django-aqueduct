@@ -54,6 +54,15 @@ def test_required_package_default_renders_and_reviews() -> None:
     assert row.hint == "REVIEW"
 
 
+def test_undeclared_default_without_required_is_not_required() -> None:
+    # UNSET means "no default declared", which a best-effort extractor emits
+    # without the project being obliged to supply a value.
+    entry = SurfaceEntry("pkg", Setting("A"), "builtin")
+    (row,) = reconcile([entry], {})
+    assert row.package_default == "(no default)"
+    assert row.hint == "REVIEW"
+
+
 def test_set_matching_default_is_ok() -> None:
     (row,) = reconcile([_entry("A", "x")], {"A": _field("A", Default.literal_("x"))})
     assert row.project_status == "set"
@@ -144,3 +153,15 @@ def test_render_determinism() -> None:
 
 def test_empty_table() -> None:
     assert "No dependency-surface settings" in render_table([])
+
+
+def test_markdown_escapes_pipes_in_cells() -> None:
+    # Type strings are union annotations, so `|` is routine, not exotic.
+    entry = SurfaceEntry(
+        "pkg", Setting("A", type="str | None", default="a|b"), "declared"
+    )
+    rows = reconcile([entry], {})
+    body = render(rows, "markdown").splitlines()[2]
+    assert body == r"| pkg | A | str \| None | 'a\|b' | unset | REVIEW |"
+    # Every row still has exactly the declared number of columns.
+    assert body.count("|") - body.count(r"\|") == 7

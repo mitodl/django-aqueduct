@@ -157,7 +157,7 @@ def extract_drf() -> list[Setting]:
             out.append(
                 Setting(
                     name=f"REST_FRAMEWORK.{key}",
-                    type="str",
+                    type=_type_str(value),
                     default=value,
                     description="Dotted import path (DRF IMPORT_STRINGS).",
                 )
@@ -226,7 +226,9 @@ def extract_celery() -> list[Setting]:
         flat = dict(cd.flatten(cd.NAMESPACES))
     except Exception:  # noqa: BLE001
         flat = {}
-    to_new: dict[str, str] = getattr(cd, "_TO_NEW_KEY", {})
+    to_new = getattr(cd, "_TO_NEW_KEY", {})
+    if not isinstance(to_new, dict):
+        to_new = {}
 
     out: list[Setting] = []
     for old in sorted(old_keys):
@@ -323,11 +325,16 @@ def load_declared_surfaces() -> dict[str, list[Setting]]:
     A plugin advertises a :class:`Setting` iterable, or a zero-arg callable
     returning one, under :data:`SURFACE_GROUP`.
 
+    ``importlib.metadata`` guarantees no ordering for entry points, but the
+    order decides which declaration wins a name collision in
+    :func:`gather_surface`, so plugins are loaded in sorted order.
+
     Raises:
         SurfaceError: If a plugin fails to load, call, or yields a non-Setting.
     """
     out: dict[str, list[Setting]] = {}
-    for ep in entry_points(group=SURFACE_GROUP):
+    eps = sorted(entry_points(group=SURFACE_GROUP), key=lambda ep: (ep.name, ep.value))
+    for ep in eps:
         try:
             loaded = ep.load()
         except Exception as exc:  # noqa: BLE001
