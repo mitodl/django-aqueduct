@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (targets 0.10.0). Implements the report phase of the RFC
+Accepted (targets 0.11.0). Implements the report phase of the RFC
 "Dependency-surface discovery for django-aqueduct"; tracks
 `tk-dependency-surface-discovery-enumerate-third-par-0baac6`.
 

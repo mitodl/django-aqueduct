@@ -7,7 +7,7 @@ from django_aqueduct.adapter import (
 )
 from django_aqueduct.surface import UNSET, Setting
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 __all__ = [
     "UNSET",
