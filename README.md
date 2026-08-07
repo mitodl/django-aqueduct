@@ -141,7 +141,7 @@ python manage.py generate_aqueduct_settings \
   values. A dict whose default was never a literal gets real genson-inferred
   `TypedDict` shape; a scalar field observed to take only a small, stable set
   of values across snapshots is promoted to `Literal[...]`; a string that
-  looks like a URL is promoted to `pydantic.AnyUrl`. Without any
+  looks like a URL is promoted to `UrlStr` (see below). Without any
   `--runtime-env-file`, it samples once under the current process
   environment. **This is the one flag that executes code** — only point it at
   modules and env files you trust.
@@ -151,7 +151,7 @@ python manage.py generate_aqueduct_settings \
   — and promotes closed-value-set fields to `Literal[...]` and range-checked
   numeric fields to `Field(gt=/ge=/lt=/le=)`.
 - Both are heuristics, not proofs — the renderer marks every result
-  `# refine type` (`Literal`/`AnyUrl`) or a `# usage-mined bound(s) —
+  `# refine type` (`Literal`/`UrlStr`) or a `# usage-mined bound(s) —
   confirm before trusting` comment (ranges) so you review before trusting
   the inferred constraint in production; the scanned code only reflects the
   values/bounds it happens to check, not necessarily the field's full valid

@@ -205,8 +205,9 @@ def apply_runtime_enrichment(
     Args:
         fields: Statically discovered fields. Mutated in place: an existing
             field's ``type`` may be refined to a ``Literal[...]`` or
-            ``AnyUrl``; a name observed at runtime with no matching field
-            gets a new ``RUNTIME_ONLY`` field appended.
+            :data:`~django_aqueduct.validation.UrlStr`; a name observed at
+            runtime with no matching field gets a new ``RUNTIME_ONLY`` field
+            appended.
         samples: One ``{NAME: value}`` dict per env snapshot, from
             :func:`~django_aqueduct.discovery.runtime.sample_module_values`.
         literal_max_values: A scalar field's distinct observed values must
@@ -308,7 +309,7 @@ def apply_usage_enrichment(
     evidence someone compared against a name, not proof a real setting
     assignment exists, so unlike :func:`apply_runtime_enrichment` this never
     authors a new field. Skips a field whose type is already a ``dict[``
-    (don't clobber TypedDict enrichment) or already a ``Literal[``/``AnyUrl``
+    (don't clobber TypedDict enrichment) or already a ``Literal[``/``UrlStr``
     (first refinement wins).
 
     Args:
