@@ -96,31 +96,57 @@ def _region_span(text: str, region_id: str) -> tuple[int, int] | None:
     return None
 
 
-def _enclosing_class(tree: ast.Module, open_line: int) -> ast.ClassDef | None:
+def _class_body_end(lines: list[str], node: ast.ClassDef) -> int:
+    """Return the 1-based last line of *node*'s body, trailing comments included.
+
+    ``ClassDef.end_lineno`` stops at the last syntactic **statement**, and every
+    region marker is a comment. A class body can therefore end — as far as
+    ``ast`` is concerned — well before its last line, which matters whenever the
+    lines after the final statement are all comments. Two layouts this module
+    has to handle do exactly that:
+
+    * the fields region followed only by comment-only regions (no container
+      decoders, no URL serializers, a preserved region holding just its
+      placeholder comments), and
+    * *every* discovered field overridden, which leaves the fields region
+      containing nothing but the override note — so the class's last statement
+      is the final override, above the opening marker.
+
+    Extending over the blank and more-indented lines that follow recovers the
+    real extent. This only ever grows the range past ``end_lineno``; it never
+    shrinks it, so a class whose body genuinely ends at a statement is
+    unaffected.
+    """
+    end = max(node.end_lineno or node.lineno, node.lineno)
+    for idx in range(end, len(lines)):  # idx is 0-based, i.e. the line after `end`
+        stripped = lines[idx].strip()
+        if not stripped:
+            continue  # a blank line neither extends nor terminates the body
+        if len(lines[idx]) - len(lines[idx].lstrip()) <= node.col_offset:
+            break
+        end = idx + 1
+    return end
+
+
+def _enclosing_class(
+    tree: ast.Module, lines: list[str], open_line: int
+) -> ast.ClassDef | None:
     """Return the class whose body contains the ``fields`` region marker.
 
-    Identified by the region's *opening* marker, never its closing one.
-    ``ClassDef.end_lineno`` stops at the last syntactic statement, and every
-    region marker is a comment — so when nothing after the fields region is a
-    statement (no container decoders, no URL serializers, a preserved region
-    holding only the placeholder comments), ``end_lineno`` lands on the last
-    generated field, *before* the closing marker. Requiring the class to span
-    the closing marker would reject the settings class outright in that layout,
-    silently disabling override suppression exactly where an override is most
-    likely: a declaration placed above the fields region, which the README
-    explicitly permits ("anywhere else outside a generated region").
+    Identified by the region's *opening* marker, never its closing one: any
+    class body containing the region necessarily starts before it, whereas
+    keying off the closing marker breaks on the comment-tail layouts described
+    in :func:`_class_body_end`.
 
-    The opening marker has no such problem: any class body containing the
-    region necessarily starts before it, and a class that closed earlier cannot
-    reach it. Among the classes that qualify, the innermost (latest-starting)
-    one wins, so a helper class nested above the region isn't mistaken for the
-    settings class.
+    Among the classes that qualify, the innermost (latest-starting) one wins, so
+    a helper class nested above the region isn't mistaken for the settings
+    class.
     """
     candidates = [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.ClassDef)
-        and node.lineno < open_line <= (node.end_lineno or 0)
+        and node.lineno < open_line <= _class_body_end(lines, node)
     ]
     return max(candidates, key=lambda n: n.lineno) if candidates else None
 
@@ -173,7 +199,7 @@ def overridden_field_names(existing: str) -> set[str]:
         if kind == "generated"
     ]
 
-    cls = _enclosing_class(tree, open_line)
+    cls = _enclosing_class(tree, existing.splitlines(), open_line)
     if cls is None:
         return set()
 

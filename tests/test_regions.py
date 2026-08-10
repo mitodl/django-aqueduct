@@ -258,6 +258,86 @@ def test_file_without_a_fields_region_reports_no_overrides() -> None:
     assert overridden_field_names("class S:\n    A: int = 1\n") == set()
 
 
+def _int_fields(*names: str):
+    from django_aqueduct.discovery.ir import (
+        Default,
+        Provenance,
+        SettingField,
+        TypeRef,
+    )
+
+    return [
+        SettingField(
+            name=n,
+            type=TypeRef("int"),
+            default=Default.literal_(1),
+            provenance=Provenance(source_module="m"),
+        )
+        for n in names
+    ]
+
+
+def test_all_fields_overridden_still_converges() -> None:
+    """Regenerating over an all-overridden file must detect the same overrides.
+
+    When every discovered field is overridden above the marker, the fields
+    region is left holding nothing but the override note — so the class's last
+    *statement* is the final override, above the opening marker, and
+    `ClassDef.end_lineno` never reaches it. Round two then saw no overrides and
+    re-emitted every declaration, so `merge` was not idempotent.
+    """
+    from django_aqueduct.codegen.renderer import ModelRenderer
+
+    fields = _int_fields("POOL_SIZE", "MAX_CONN")
+    rendered = ModelRenderer(fields).render()
+    existing = rendered.replace(
+        "    # >>> aqueduct:generated:fields",
+        "    POOL_SIZE: int = Field(default=10)\n"
+        "    MAX_CONN: int = Field(default=20)\n\n"
+        "    # >>> aqueduct:generated:fields",
+    )
+
+    first = overridden_field_names(existing)
+    assert first == {"POOL_SIZE", "MAX_CONN"}
+
+    merged = merge(existing, ModelRenderer(fields, overridden=first).render())
+    # Precondition: the region really is comment-only, or this proves nothing.
+    body = generated_regions(merged)["fields"]
+    assert body.strip(), "expected the override note"
+    assert not any(
+        line.strip() and not line.strip().startswith("#") for line in body.splitlines()
+    ), "fields region should hold only comments in this layout"
+
+    second = overridden_field_names(merged)
+    assert second == first, "regeneration must keep seeing the same overrides"
+
+    again = merge(merged, ModelRenderer(fields, overridden=second).render())
+    assert again == merged, "merge must be idempotent"
+
+    module = _exec_module(merged, "all_overridden_model")
+    inst = module.AqueductSettings()
+    assert (inst.POOL_SIZE, inst.MAX_CONN) == (10, 20)
+
+
+def test_class_extent_stops_at_a_dedent() -> None:
+    """Extending over trailing comments must not swallow a following class."""
+    doc = (
+        "class Helper:\n"
+        "    A: int = 1\n"
+        "    # a trailing comment inside Helper\n"
+        "\n"
+        "\n"
+        "class S(BaseSettings):\n"
+        "    POOL_SIZE: int = Field(default=10)\n"
+        "\n"
+        "    # >>> aqueduct:generated:fields\n"
+        "    # ===== declared outside this region =====\n"
+        "    #   POOL_SIZE\n"
+        "    # <<< aqueduct:generated:fields\n"
+    )
+    assert overridden_field_names(doc) == {"POOL_SIZE"}
+
+
 def test_override_before_the_fields_region_with_no_trailing_statements() -> None:
     """The class is found from the region's opening marker, not its closing one.
 

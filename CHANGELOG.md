@@ -29,16 +29,24 @@ hand-written override should upgrade.
   generated declaration (and that field's duplicate-field finding), because it
   borrows its annotation from that declaration.
 
-- **An override placed *above* the fields region is detected again.** The
-  enclosing class was located by requiring it to span the region's *closing*
-  marker, but `ClassDef.end_lineno` stops at the last syntactic statement and
-  every region marker is a comment. For a model whose fields region is followed
-  only by comment-only regions (no container decoders, no URL serializers),
-  `end_lineno` lands on the last generated field — before that marker — so the
-  settings class was rejected outright and suppression silently did nothing,
-  re-emitting the duplicate declaration 0.12.0 exists to remove. The class is
-  now identified from the region's *opening* marker, which no comment tail can
-  move past.
+- **An override placed *above* the fields region is detected again, and
+  regeneration converges.** The enclosing class was located by requiring it to
+  span the region's *closing* marker, but `ClassDef.end_lineno` stops at the
+  last syntactic statement and every region marker is a comment. For a model
+  whose fields region is followed only by comment-only regions (no container
+  decoders, no URL serializers), `end_lineno` lands on the last generated field
+  — before that marker — so the settings class was rejected outright and
+  suppression silently did nothing, re-emitting the duplicate declaration
+  0.12.0 exists to remove.
+
+  The class is now identified from the region's *opening* marker, and its
+  extent is measured by indentation rather than `end_lineno`, so trailing
+  comments count as part of the body. The second part matters when **every**
+  discovered field is overridden: the fields region is then left holding only
+  the override note, the class's last statement is the final override *above*
+  the opening marker, and a marker-only rule would still miss it — regeneration
+  would detect no overrides, re-emit every declaration, and `merge` would not
+  be idempotent.
 
 Both are covered by tests that `exec` the merged module and instantiate the
 model, rather than asserting on the detected-name set — the gap that let both
