@@ -156,7 +156,7 @@ python manage.py generate_aqueduct_settings \
   values. A dict whose default was never a literal gets real genson-inferred
   `TypedDict` shape; a scalar field observed to take only a small, stable set
   of values across snapshots is promoted to `Literal[...]`; a string that
-  looks like a URL is promoted to `pydantic.AnyUrl`. Without any
+  looks like a URL is promoted to `UrlStr` (see below). Without any
   `--runtime-env-file`, it samples once under the current process
   environment. **This is the one flag that executes code** — only point it at
   modules and env files you trust.
@@ -166,21 +166,35 @@ python manage.py generate_aqueduct_settings \
   — and promotes closed-value-set fields to `Literal[...]` and range-checked
   numeric fields to `Field(gt=/ge=/lt=/le=)`.
 - Both are heuristics, not proofs — the renderer marks every result
-  `# refine type` (`Literal`/`AnyUrl`) or a `# usage-mined bound(s) —
+  `# refine type` (`Literal`/`UrlStr`) or a `# usage-mined bound(s) —
   confirm before trusting` comment (ranges) so you review before trusting
   the inferred constraint in production; the scanned code only reflects the
   values/bounds it happens to check, not necessarily the field's full valid
   domain.
 - **`--enrich-url-types`** is a separate, static, opt-in flag: a `str` field
-  whose literal default actually validates as an absolute `pydantic.AnyUrl`
-  is promoted (and paired with a `field_serializer` so `model_dump()` keeps
-  emitting `str`); a field with no literal value to check (required, derived,
-  or `None`) falls back to its name ending in `_URL`/`_URI`, minus a denylist
-  of Django settings that are conventionally relative (`STATIC_URL`,
+  whose literal default actually validates as an absolute URL is promoted to
+  `django_aqueduct.UrlStr`; a field with no literal value to check (required,
+  derived, or `None`) falls back to its name ending in `_URL`/`_URI`, minus a
+  denylist of Django settings that are conventionally relative (`STATIC_URL`,
   `MEDIA_URL`, `LOGIN_URL`, `LOGIN_REDIRECT_URL`, `LOGOUT_REDIRECT_URL`, ...).
   It's opt-in because the name-fallback path can still promote a required
   field whose real env value turns out to be relative — review any resulting
-  `AnyUrl` before trusting it in production.
+  promotion before trusting it in production.
+
+  `UrlStr` is `Annotated[str, AfterValidator(...)]`, **not** `pydantic.AnyUrl`.
+  It checks the value parses as an absolute URL and returns it *unchanged*, so
+  the attribute is still a plain `str`:
+
+  ```python
+  urlparse(self.SITE_BASE_URL).netloc      # works — AnyUrl raised AttributeError
+  urljoin(self.APP_BASE_URL, "/callback")  # works — AnyUrl raised TypeError
+  self.REDISCLOUD_URL.strip()              # works — AnyUrl has no .strip()
+  {"LOCATION": self.CELERY_BROKER_URL}     # nested value dumps as str
+  ```
+
+  It also doesn't rewrite the value. `AnyUrl` appends a trailing slash to a bare
+  host (`https://app.posthog.com` → `https://app.posthog.com/`), which injects a
+  value the legacy settings module never produced.
 
 ### Step 3 — Wire the shim
 

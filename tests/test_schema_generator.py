@@ -133,8 +133,8 @@ def test_literal_type_becomes_enum() -> None:
     assert prop["enum"] == ["dev", "staging"]
 
 
-def test_anyurl_type_becomes_uri_format() -> None:
-    f = _field("API_BASE_URL", type_base="AnyUrl")
+def test_url_str_type_becomes_uri_format() -> None:
+    f = _field("API_BASE_URL", type_base="UrlStr")
     prop = SchemaGenerator([f]).generate()["properties"]["API_BASE_URL"]
     assert prop["type"] == "string"
     assert prop["format"] == "uri"

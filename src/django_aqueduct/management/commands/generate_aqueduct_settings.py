@@ -217,14 +217,15 @@ class Command(BaseCommand):
             action="store_true",
             default=None,
             help=(
-                "Promote str fields to pydantic.AnyUrl: a field whose static "
-                "literal default actually validates as an absolute URL, or "
-                "(absent a literal value to check) whose name ends in "
+                "Promote str fields to django_aqueduct.UrlStr: a field whose "
+                "static literal default actually validates as an absolute URL, "
+                "or (absent a literal value to check) whose name ends in "
                 "_URL/_URI and isn't a known Django relative-URL setting "
-                "(STATIC_URL, LOGIN_URL, etc). Paired with a field_serializer "
-                "so the dumped value stays str. Static-only; opt-in because "
-                "the name heuristic can still promote a required field whose "
-                "real env value turns out to be relative."
+                "(STATIC_URL, LOGIN_URL, etc). UrlStr is a str with an "
+                "AfterValidator, so the runtime type and the exact value are "
+                "unchanged. Static-only; opt-in because the name heuristic can "
+                "still promote a required field whose real env value turns out "
+                "to be relative."
             ),
         )
         parser.add_argument(
@@ -234,7 +235,7 @@ class Command(BaseCommand):
             help=(
                 "Import --modules once per --runtime-env-file snapshot to "
                 "refine dict shapes (genson), closed-value-set fields "
-                "(Literal[...]), and URL-shaped strings (AnyUrl) — never "
+                "(Literal[...]), and URL-shaped strings (UrlStr) — never "
                 "field defaults/required-ness/aliases. Executes project code; "
                 "only point it at trusted modules and env files."
             ),

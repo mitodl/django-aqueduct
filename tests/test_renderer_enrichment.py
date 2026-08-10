@@ -89,37 +89,36 @@ def test_literal_type_renders_with_import():
     ast.parse(src)
 
 
-def test_anyurl_type_renders_with_import():
-    f = SettingField(
-        name="API_BASE_URL",
-        type=TypeRef("AnyUrl", imports=frozenset({ImportSpec("pydantic", "AnyUrl")})),
+def _url_field(name: str = "API_BASE_URL") -> SettingField:
+    return SettingField(
+        name=name,
+        type=TypeRef(
+            "UrlStr", imports=frozenset({ImportSpec("django_aqueduct", "UrlStr")})
+        ),
         default=Default.literal_(None),
         provenance=Provenance(source_module="m"),
     )
-    src = ModelRenderer([f]).render()
-    assert "from pydantic import AnyUrl" in src
-    assert "API_BASE_URL: AnyUrl" in src
+
+
+def test_url_str_type_renders_with_import():
+    src = ModelRenderer([_url_field()]).render()
+    assert "from django_aqueduct import UrlStr" in src
+    assert "API_BASE_URL: UrlStr" in src
     ast.parse(src)
 
 
-def test_anyurl_field_gets_str_serializer():
-    """An AnyUrl-typed field is paired with a field_serializer dumping str.
+def test_url_str_field_needs_no_serializer():
+    """UrlStr is a str, so nothing has to convert it back on dump.
 
-    Without this, model_dump() would emit a pydantic.Url object instead of
-    str for a field promoted by apply_url_type_hints, breaking parity with
-    the legacy str-typed setting.
+    The field_serializer the AnyUrl promotion needed only ever intercepted
+    serialization; it did nothing for a validator reading the attribute, for a
+    URL nested in a dict setting, or for AnyUrl's trailing-slash rewrite. A str
+    subtype removes the need for it entirely.
     """
-    f = SettingField(
-        name="API_BASE_URL",
-        type=TypeRef("AnyUrl", imports=frozenset({ImportSpec("pydantic", "AnyUrl")})),
-        default=Default.literal_(None),
-        provenance=Provenance(source_module="m"),
-    )
-    src = ModelRenderer([f]).render()
-    assert "from pydantic import AnyUrl, Field, field_serializer" in src
-    assert '@field_serializer("API_BASE_URL", when_used="always")' in src
-    assert "def _aqueduct_serialize_url_fields(self, value: object) -> object:" in src
-    assert "# >>> aqueduct:generated:url_serializers" in src
+    src = ModelRenderer([_url_field()]).render()
+    assert "field_serializer" not in src
+    assert "url_serializers" not in src
+    assert "AnyUrl" not in src
     ast.parse(src)
 
 

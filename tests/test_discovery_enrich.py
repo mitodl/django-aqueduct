@@ -122,7 +122,7 @@ def test_runtime_only_name_gets_literal_type_when_evidence_supports_it():
 # ------------------------------------------------------------------ #
 
 
-def test_runtime_url_shaped_strings_promote_to_anyurl():
+def test_runtime_url_shaped_strings_promote_to_url_str():
     f = _field("SOME_ENDPOINT", base="str")
     samples = [
         {"SOME_ENDPOINT": "https://a.example.com"},
@@ -131,7 +131,7 @@ def test_runtime_url_shaped_strings_promote_to_anyurl():
     ]
     # more distinct values than literal_max_values would allow as an enum
     apply_runtime_enrichment([f], samples, literal_max_values=1)
-    assert f.type.base == "AnyUrl"
+    assert f.type.base == "UrlStr"
     assert f.type.needs_refinement is True
 
 
@@ -198,7 +198,7 @@ def test_usage_range_enrichment_ignores_unknown_field():
 def test_url_hint_from_name():
     f = _field("API_BASE_URL", base="str")
     apply_url_type_hints([f])
-    assert f.type.base == "AnyUrl"
+    assert f.type.base == "UrlStr"
     assert f.type.needs_refinement is True
 
 
@@ -207,7 +207,7 @@ def test_url_hint_from_default_value():
         "SOME_ENDPOINT", base="str", default=Default.literal_("https://example.com")
     )
     apply_url_type_hints([f])
-    assert f.type.base == "AnyUrl"
+    assert f.type.base == "UrlStr"
 
 
 def test_url_hint_preserves_optional_flag():
@@ -218,7 +218,7 @@ def test_url_hint_preserves_optional_flag():
         provenance=Provenance(source_module="m"),
     )
     apply_url_type_hints([f])
-    assert f.type.base == "AnyUrl"
+    assert f.type.base == "UrlStr"
     assert f.type.optional is True
 
 
@@ -248,7 +248,7 @@ def test_url_hint_sqlite_style_uri_promotes_on_value_alone():
         "DB_LOCATION", base="str", default=Default.literal_("sqlite:///db.sqlite3")
     )
     apply_url_type_hints([f])
-    assert f.type.base == "AnyUrl"
+    assert f.type.base == "UrlStr"
 
 
 def test_url_hint_rejects_relative_default_despite_matching_name():
@@ -286,4 +286,4 @@ def test_url_hint_name_fallback_still_applies_to_required_field():
         provenance=Provenance(source_module="m"),
     )
     apply_url_type_hints([f])
-    assert f.type.base == "AnyUrl"
+    assert f.type.base == "UrlStr"

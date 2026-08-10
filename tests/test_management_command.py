@@ -52,10 +52,10 @@ def test_static_discovery_recovers_aliases_and_required(
     )
 
 
-def test_enrich_url_types_promotes_and_serializes(
+def test_enrich_url_types_promotes_to_url_str(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """--enrich-url-types promotes str-typed fields and adds a field_serializer."""
+    """--enrich-url-types promotes str-typed fields to UrlStr, not AnyUrl."""
     call_command(
         "generate_aqueduct_settings",
         modules="v2_fixture_settings",
@@ -66,12 +66,14 @@ def test_enrich_url_types_promotes_and_serializes(
     # No literal default to check -> name hint promotes it (not a known
     # Django relative-URL setting).
     assert (
-        "APP_BASE_URL: AnyUrl = Field(\n"
+        "APP_BASE_URL: UrlStr = Field(\n"
         '        ..., validation_alias=AliasChoices("APP_BASE_URL")\n'
         "    )"
     ) in out
-    assert '@field_serializer("APP_BASE_URL", when_used="always")' in out
-    assert "def _aqueduct_serialize_url_fields(self, value: object) -> object:" in out
+    assert "from django_aqueduct import UrlStr" in out
+    # UrlStr is a str, so no serializer is needed to dump it as one.
+    assert "AnyUrl" not in out
+    assert "field_serializer" not in out
 
 
 def test_single_module_has_no_group_header(

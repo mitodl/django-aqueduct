@@ -25,15 +25,15 @@ Refinements produced:
   sites) is promoted to ``Literal[...]``, flagged ``needs_refinement`` so a
   human confirms the set is actually exhaustive before trusting it in
   production.
-* **URL-shaped string (``AnyUrl``)** — a ``str`` field whose static default
-  actually validates as an absolute ``pydantic.AnyUrl``, or (absent a
-  concrete default to check) whose name looks like a URL (``*_URL``/
-  ``*_URI``, minus a denylist of Django settings that are conventionally
-  relative), is promoted to ``pydantic.AnyUrl``, flagged
-  ``needs_refinement`` (a human should confirm ``AnyUrl`` vs. ``HttpUrl`` vs.
-  a custom-scheme validator) and paired with a ``field_serializer`` so the
-  dumped value stays ``str``. Static and opt-in via ``--enrich-url-types``
-  — see :func:`apply_url_type_hints`.
+* **URL-shaped string (``UrlStr``)** — a ``str`` field whose static default
+  actually validates as an absolute URL, or (absent a concrete default to
+  check) whose name looks like a URL (``*_URL``/``*_URI``, minus a denylist of
+  Django settings that are conventionally relative), is promoted to
+  :data:`~django_aqueduct.validation.UrlStr` — a ``str`` carrying an
+  ``AfterValidator``, *not* ``pydantic.AnyUrl``, so the runtime type and the
+  exact value are unchanged. Flagged ``needs_refinement`` (a human should
+  confirm whether a stricter scheme check is wanted). Static and opt-in via
+  ``--enrich-url-types`` — see :func:`apply_url_type_hints`.
 * **Numeric range (``Constraints``)** — usage-site range comparisons
   (``if not (0 < TIMEOUT <= 3600): raise ...``) become ``Field(gt=, ge=,
   lt=, le=)`` bounds, rendered with an explicit review comment (see
@@ -71,9 +71,14 @@ DEFAULT_LITERAL_MIN_SAMPLES = 2
 
 _ScalarSet = set[str | int | float | bool | None]
 
-_ANY_URL_TYPE_REF = TypeRef(
-    base="AnyUrl",
-    imports=frozenset({ImportSpec("pydantic", "AnyUrl")}),
+_URL_STR_IMPORTS = frozenset({ImportSpec("django_aqueduct", "UrlStr")})
+
+# Sentinel for "this field's observed values all look like URLs"; the concrete
+# TypeRef is built per-field by `_as_url_type` so the field's own `optional`
+# flag survives promotion.
+_URL_STR_TYPE_REF = TypeRef(
+    base="UrlStr",
+    imports=_URL_STR_IMPORTS,
     needs_refinement=True,
 )
 
@@ -138,28 +143,41 @@ def _looks_like_url_value(value: object) -> bool:
 
 
 def _as_url_type(field_type: TypeRef) -> TypeRef:
+    """Promote to :data:`~django_aqueduct.validation.UrlStr`, not ``AnyUrl``.
+
+    ``UrlStr`` validates the same shape but stays a ``str`` at runtime. See
+    :mod:`django_aqueduct.validation` for why the distinction matters.
+    """
     return TypeRef(
-        base="AnyUrl",
-        imports=_ANY_URL_TYPE_REF.imports,
+        base="UrlStr",
+        imports=_URL_STR_IMPORTS,
         optional=field_type.optional,
         needs_refinement=True,
     )
 
 
 def apply_url_type_hints(fields: list[SettingField]) -> None:
-    """Refine plain ``str`` fields to ``AnyUrl`` from name/default-value alone.
+    """Refine plain ``str`` fields to ``UrlStr`` from name/default-value alone.
 
     Static (only inspects a field's own name and its already
     statically-discovered literal default) but opt-in via
     ``--enrich-url-types`` — unlike the earlier unconditional behavior, a
     field with a concrete literal default is promoted *only* if that value
-    actually validates as an absolute ``AnyUrl``; the name-suffix heuristic
+    actually validates as an absolute URL; the name-suffix heuristic
     (minus :data:`_DJANGO_RELATIVE_URL_NAMES`) is a fallback used only when
     there's no literal value to check (``REQUIRED``/``DERIVED``/``EXPR``
     defaults, or a literal ``None``). This is what stops Django's relative
     ``*_URL`` settings (``STATIC_URL='/static/'``, ``LOGIN_URL='login'``,
     an empty ``API_BASE_URL``) from being promoted into a type their own
     default can't satisfy.
+
+    The promoted type is :data:`~django_aqueduct.validation.UrlStr`, which is
+    a ``str``. That is what makes the flag usable at all: the value keeps
+    working in ``urlparse``/``urljoin``/``.strip()`` inside a hand-written
+    validator, survives being nested in a ``dict``-valued setting, and is not
+    rewritten (``AnyUrl`` appends a trailing slash to a bare host). Those three
+    paths, none of which a ``field_serializer`` reaches, are why 4 of 5 apps
+    left ``--enrich-url-types`` off through 0.9.0-0.12.0.
     """
     for f in fields:
         if f.type.base != "str" or f.type.needs_refinement:
@@ -187,8 +205,9 @@ def apply_runtime_enrichment(
     Args:
         fields: Statically discovered fields. Mutated in place: an existing
             field's ``type`` may be refined to a ``Literal[...]`` or
-            ``AnyUrl``; a name observed at runtime with no matching field
-            gets a new ``RUNTIME_ONLY`` field appended.
+            :data:`~django_aqueduct.validation.UrlStr`; a name observed at
+            runtime with no matching field gets a new ``RUNTIME_ONLY`` field
+            appended.
         samples: One ``{NAME: value}`` dict per env snapshot, from
             :func:`~django_aqueduct.discovery.runtime.sample_module_values`.
         literal_max_values: A scalar field's distinct observed values must
@@ -241,7 +260,7 @@ def apply_runtime_enrichment(
             if 1 < len(distinct) <= literal_max_values:
                 refined_type = _literal_type_ref(distinct)
             elif all(isinstance(v, str) and _looks_like_url_value(v) for v in observed):
-                refined_type = _ANY_URL_TYPE_REF
+                refined_type = _URL_STR_TYPE_REF
 
         field = by_name.get(name)
         if field is not None:
@@ -250,7 +269,7 @@ def apply_runtime_enrichment(
             elif refined_type is not None:
                 field.type = (
                     _as_url_type(field.type)
-                    if refined_type is _ANY_URL_TYPE_REF
+                    if refined_type is _URL_STR_TYPE_REF
                     else refined_type
                 )
             continue
@@ -290,7 +309,7 @@ def apply_usage_enrichment(
     evidence someone compared against a name, not proof a real setting
     assignment exists, so unlike :func:`apply_runtime_enrichment` this never
     authors a new field. Skips a field whose type is already a ``dict[``
-    (don't clobber TypedDict enrichment) or already a ``Literal[``/``AnyUrl``
+    (don't clobber TypedDict enrichment) or already a ``Literal[``/``UrlStr``
     (first refinement wins).
 
     Args:
@@ -306,7 +325,7 @@ def apply_usage_enrichment(
             continue
         if (
             field.type.base.startswith(("dict[", "Literal["))
-            or field.type.base == "AnyUrl"
+            or field.type.base == "UrlStr"
         ):
             continue
         scalars: _ScalarSet = {
