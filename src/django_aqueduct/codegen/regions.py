@@ -96,6 +96,61 @@ def _region_span(text: str, region_id: str) -> tuple[int, int] | None:
     return None
 
 
+def _class_body_end(lines: list[str], node: ast.ClassDef) -> int:
+    """Return the 1-based last line of *node*'s body, trailing comments included.
+
+    ``ClassDef.end_lineno`` stops at the last syntactic **statement**, and every
+    region marker is a comment. A class body can therefore end — as far as
+    ``ast`` is concerned — well before its last line, which matters whenever the
+    lines after the final statement are all comments. Two layouts this module
+    has to handle do exactly that:
+
+    * the fields region followed only by comment-only regions (no container
+      decoders, no URL serializers, a preserved region holding just its
+      placeholder comments), and
+    * *every* discovered field overridden, which leaves the fields region
+      containing nothing but the override note — so the class's last statement
+      is the final override, above the opening marker.
+
+    Extending over the blank and more-indented lines that follow recovers the
+    real extent. This only ever grows the range past ``end_lineno``; it never
+    shrinks it, so a class whose body genuinely ends at a statement is
+    unaffected.
+    """
+    end = max(node.end_lineno or node.lineno, node.lineno)
+    for idx in range(end, len(lines)):  # idx is 0-based, i.e. the line after `end`
+        stripped = lines[idx].strip()
+        if not stripped:
+            continue  # a blank line neither extends nor terminates the body
+        if len(lines[idx]) - len(lines[idx].lstrip()) <= node.col_offset:
+            break
+        end = idx + 1
+    return end
+
+
+def _enclosing_class(
+    tree: ast.Module, lines: list[str], open_line: int
+) -> ast.ClassDef | None:
+    """Return the class whose body contains the ``fields`` region marker.
+
+    Identified by the region's *opening* marker, never its closing one: any
+    class body containing the region necessarily starts before it, whereas
+    keying off the closing marker breaks on the comment-tail layouts described
+    in :func:`_class_body_end`.
+
+    Among the classes that qualify, the innermost (latest-starting) one wins, so
+    a helper class nested above the region isn't mistaken for the settings
+    class.
+    """
+    candidates = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef)
+        and node.lineno < open_line <= _class_body_end(lines, node)
+    ]
+    return max(candidates, key=lambda n: n.lineno) if candidates else None
+
+
 def overridden_field_names(existing: str) -> set[str]:
     """Return field names the settings class declares *outside* a generated region.
 
@@ -109,14 +164,24 @@ def overridden_field_names(existing: str) -> set[str]:
     file, losing lint coverage of the hand-written regions too. The caller drops
     the generated declaration instead, leaving exactly one.
 
+    Only *annotated* declarations count. A bare ``NAME = value`` is not a
+    complete pydantic field — it borrows the annotation from the generated
+    declaration above it. Dropping that declaration would leave the model with
+    an unannotated class attribute, which pydantic v2 rejects outright::
+
+        PydanticUserError: A non-annotated attribute was detected:
+        `POOL_SIZE = 5`. All model fields require a type annotation
+
+    That turns a lint finding (two class-level assignments) into a model that
+    won't import at all — strictly worse than the problem being solved. So a
+    plain assignment is left alone: its generated declaration stays, keeping the
+    model valid, and the ``PIE794``/``F811`` pair remains for that one field.
+    Annotate the override to have it suppressed.
+
     Only the class that encloses the ``fields`` region is inspected, so helper
     classes elsewhere in the module can reuse a settings name freely. A file
     that doesn't parse yields no names — regenerating over a half-edited file
     should not also silently drop managed declarations.
-
-    The result is every such name, including the renderer's own unfenced
-    ``model_config`` line; the renderer intersects it with the names it actually
-    discovered, so nothing here needs to know which are really settings.
     """
     fields_span = _region_span(existing, "fields")
     if fields_span is None:
@@ -127,30 +192,26 @@ def overridden_field_names(existing: str) -> set[str]:
         return set()
 
     # ast linenos are 1-based; region indices are 0-based line offsets.
-    open_line, close_line = fields_span[0] + 1, fields_span[1] + 1
+    open_line = fields_span[0] + 1
     generated_spans = [
         (o + 1, c + 1)
         for kind, _rid, o, c in _iter_marked_regions(existing)
         if kind == "generated"
     ]
 
+    cls = _enclosing_class(tree, existing.splitlines(), open_line)
+    if cls is None:
+        return set()
+
     names: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef):
+    for stmt in cls.body:
+        # ast.Assign (`NAME = value`) is deliberately not handled — see above.
+        if not isinstance(stmt, ast.AnnAssign):
             continue
-        if not (node.lineno < open_line <= close_line <= (node.end_lineno or 0)):
+        if any(o <= stmt.lineno <= c for o, c in generated_spans):
             continue
-        for stmt in node.body:
-            targets: list[ast.expr] = []
-            if isinstance(stmt, ast.AnnAssign):
-                targets = [stmt.target]
-            elif isinstance(stmt, ast.Assign):
-                targets = list(stmt.targets)
-            else:
-                continue
-            if any(o <= stmt.lineno <= c for o, c in generated_spans):
-                continue
-            names.update(t.id for t in targets if isinstance(t, ast.Name))
+        if isinstance(stmt.target, ast.Name):
+            names.add(stmt.target.id)
     return names
 
 
