@@ -44,7 +44,7 @@ def test_resolves_inspector_instance(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_resolves_factory(monkeypatch: pytest.MonkeyPatch) -> None:
-    ep = SimpleNamespace(name="p", load=lambda: (lambda: _Inspector("B")))
+    ep = SimpleNamespace(name="p", load=lambda: lambda: _Inspector("B"))
     monkeypatch.setattr(registry, "entry_points", _fake_entry_points(ep))
     fields = registry.discover_from_plugins()
     assert [f.name for f in fields] == ["B"]
@@ -93,7 +93,7 @@ def test_factory_that_raises_is_wrapped(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_non_inspector_factory_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    ep = SimpleNamespace(name="p", load=lambda: (lambda: object()))
+    ep = SimpleNamespace(name="p", load=lambda: lambda: object())
     monkeypatch.setattr(registry, "entry_points", _fake_entry_points(ep))
     with pytest.raises(registry.RegistryError, match="not an inspector instance"):
         registry.load_inspectors()
