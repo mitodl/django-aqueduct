@@ -5,6 +5,45 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1]
+
+Two correctness fixes to 0.12.0's override suppression, both found in review
+after 0.12.0 shipped. Anyone on 0.12.0 who regenerates a model with a
+hand-written override should upgrade.
+
+### Fixed
+
+- **A field overridden with a bare `NAME = value` no longer loses its
+  annotation.** 0.12.0 treated a plain assignment as a complete override and
+  dropped the generated declaration, leaving the class with an unannotated
+  attribute — which pydantic v2 refuses to build a model from:
+
+  ```
+  PydanticUserError: A non-annotated attribute was detected: `POOL_SIZE = 5`.
+  All model fields require a type annotation
+  ```
+
+  That turned a lint finding into an **import-time crash of the whole settings
+  model** — strictly worse than the `PIE794`/`F811` pair it was removing. Only
+  an *annotated* declaration suppresses now; a plain assignment keeps its
+  generated declaration (and that field's duplicate-field finding), because it
+  borrows its annotation from that declaration.
+
+- **An override placed *above* the fields region is detected again.** The
+  enclosing class was located by requiring it to span the region's *closing*
+  marker, but `ClassDef.end_lineno` stops at the last syntactic statement and
+  every region marker is a comment. For a model whose fields region is followed
+  only by comment-only regions (no container decoders, no URL serializers),
+  `end_lineno` lands on the last generated field — before that marker — so the
+  settings class was rejected outright and suppression silently did nothing,
+  re-emitting the duplicate declaration 0.12.0 exists to remove. The class is
+  now identified from the region's *opening* marker, which no comment tail can
+  move past.
+
+Both are covered by tests that `exec` the merged module and instantiate the
+model, rather than asserting on the detected-name set — the gap that let both
+through 0.12.0's suite.
+
 ## [0.12.0]
 
 ### Fixed
@@ -33,19 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--reset` restores all of them. `--check` derives the same set from the same
   file, so a file with overrides reports in-sync rather than permanent drift.
 
-  Only an **annotated** override suppresses. A bare `NAME = value` borrows its
-  annotation from the generated declaration, so dropping that declaration would
-  leave an unannotated class attribute — which pydantic v2 rejects at class
-  creation (`PydanticUserError: A non-annotated attribute was detected`),
-  trading a lint finding for a model that won't import. A plain assignment
-  therefore keeps its generated declaration (and that field's `PIE794`/`F811`).
-
-  An override is recognised anywhere outside a generated region, including
-  *above* the fields region. The enclosing class is located from the region's
-  opening marker: `ClassDef.end_lineno` stops at the last statement and region
-  markers are comments, so for a model whose fields region is followed only by
-  comment-only regions (no container decoders, no URL serializers), keying off
-  the closing marker would fail to find the class at all.
+  (Both of the above shipped with correctness bugs — see 0.12.1.)
 
 - **`# TODO: refine type` markers are now spelled `# refine type`.** Ruff's
   `TD002`/`TD003` (missing author, missing issue link) and `FIX002` fire on the
