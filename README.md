@@ -389,6 +389,59 @@ call, preserving `description`, `required`, and `dev_only` metadata.
 
 ---
 
+## `--openedx-plugins` — settings contributed by Open edX plugin apps
+
+An Open edX plugin app never assigns its settings at module scope in a module
+you name. It registers an `AppConfig` under the `lms.djangoapp` /
+`cms.djangoapp` entry-point group, and the host's `common.py` calls
+`add_plugins()`, which calls the plugin's `plugin_settings(settings)` function
+to mutate the live settings object:
+
+```python
+# openedx_companion_auth/settings/common.py
+def plugin_settings(settings):
+    settings.MITX_REDIRECT_ENABLED = True
+    settings.MITX_REDIRECT_LOGIN_URL = "/auth/login/ol-oauth2/?auth_entry=login"
+```
+
+Static discovery cannot see those names, so the generated model has no field
+for them. With an env-var settings source that is not a cosmetic gap:
+pydantic-settings collects values *per declared field*, so an undeclared
+`MITX_REDIRECT_ENABLED=false` in the environment is dropped outright rather
+than parsed — the setting cannot be overridden at all.
+
+```bash
+python manage.py generate_aqueduct_settings \
+    --modules lms.envs.common \
+    --openedx-plugins lms.djangoapp
+```
+
+Discovery stays inside codegen v2's no-execution contract. Installed
+distribution metadata names each plugin's `AppConfig`; the `plugin_app` dict is
+read by **parsing** that class's source, with the framework's own constants
+(`PluginSettings.CONFIG`, `ProjectType.LMS`, …) resolved from a table so the
+constant-reference spelling works as well as plain string keys. The resolved
+settings module is then parsed for `settings.UPPERCASE = <expr>` assignments
+inside `plugin_settings()`.
+
+Field semantics follow the rest of codegen v2: a literal becomes
+`LITERAL`/`FACTORY`, a reproducible expression `EXPR`, a secret-looking name
+`REDACTED`, and anything reading another setting — the
+`settings.ENV_TOKENS.get(...)` idiom filling most plugin `production.py`
+modules — `DERIVED`. Augmenting calls (`settings.MIDDLEWARE.extend([...])`)
+and subscript writes (`settings.FEATURES["X"] = True`) mutate a setting the
+host already owns, so they declare nothing and are skipped.
+
+Precedence: a setting your own `--modules` declare always wins. Within a
+plugin, `common` is the authority for the default (under aqueduct the overlay
+base is `<svc>.envs.common`, so that is the only `add_plugins()` call that
+runs), and a `production` module's `DERIVED` re-assignment never erases it.
+
+One malformed plugin cannot fail a generation run — it is reported on stderr
+and skipped.
+
+---
+
 ## Dependency-surface report
 
 `generate_aqueduct_settings` only sees settings your *project* writes. A setting

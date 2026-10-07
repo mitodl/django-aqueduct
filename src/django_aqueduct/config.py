@@ -21,6 +21,7 @@ from pathlib import Path
 _VALID_FORMATS = ("python", "jsonschema")
 _VALID_EXTRA = ("allow", "ignore", "forbid")
 _VALID_REPORT_FORMATS = ("table", "json", "markdown")
+_VALID_PROJECT_TYPES = ("lms.djangoapp", "cms.djangoapp")
 
 
 class ConfigError(Exception):
@@ -42,6 +43,7 @@ class AqueductConfig:
     parity_legacy: str | None = None
     parity_ignore: list[str] = field(default_factory=list)
     use_plugins: bool = False
+    openedx_plugins: str | None = None
     enrich_url_types: bool = False
     attribution_rules: list[tuple[str, str]] = field(default_factory=list)
     dependency_surface: bool = False
@@ -115,6 +117,14 @@ def load_config(start: Path | None = None) -> AqueductConfig:
         ]
     if isinstance(table.get("use_plugins"), bool):
         cfg.use_plugins = table["use_plugins"]
+    if "openedx_plugins" in table:
+        project_type = table["openedx_plugins"]
+        if project_type not in _VALID_PROJECT_TYPES:
+            raise ConfigError(
+                f"[tool.aqueduct] openedx_plugins={project_type!r} is invalid; "
+                f"expected one of {', '.join(_VALID_PROJECT_TYPES)}."
+            )
+        cfg.openedx_plugins = project_type
     if isinstance(table.get("enrich_url_types"), bool):
         cfg.enrich_url_types = table["enrich_url_types"]
     rules = table.get("attribution_rules")

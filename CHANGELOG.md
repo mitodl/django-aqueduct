@@ -5,6 +5,50 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0]
+
+### Added
+
+- **`--openedx-plugins {lms,cms}.djangoapp`** — discover the settings installed
+  Open edX plugin apps contribute through their `plugin_settings()` hooks.
+
+  A plugin never assigns its settings at module scope in a module the project
+  names; it registers an `AppConfig` under the `lms.djangoapp` /
+  `cms.djangoapp` entry-point group and the host's `common.py` calls
+  `add_plugins()`, which calls `plugin_settings(settings)` to mutate the live
+  settings object. Static discovery therefore produced no field for any of
+  them — and with an env-var source a missing field is not cosmetic:
+  pydantic-settings collects values *per declared field*, so an undeclared
+  `MITX_REDIRECT_ENABLED=false` in the environment was dropped rather than
+  parsed, leaving the setting with no override path at all.
+
+  Discovery stays inside codegen v2's no-execution contract. Distribution
+  metadata names each plugin's `AppConfig`; its `plugin_app` dict is read by
+  parsing that class's source, with the framework's constants
+  (`PluginSettings.CONFIG`, `ProjectType.LMS`, `SettingsType.COMMON`, …)
+  resolved from a table so the constant-reference spelling works as well as
+  plain string keys. The resolved settings module is then parsed for
+  `settings.UPPERCASE = <expr>` assignments inside `plugin_settings()`, reusing
+  `StaticModuleInspector`'s default capture — so literals become
+  `LITERAL`/`FACTORY`, secret-looking names `REDACTED`, and the
+  `settings.ENV_TOKENS.get(...)` passthrough that fills most plugin
+  `production.py` modules becomes `DERIVED`. Augmenting calls
+  (`settings.MIDDLEWARE.extend([...])`) and subscript writes are mutations of a
+  host-owned setting, not declarations, and are skipped.
+
+  Precedence: the project's own `--modules` always win over a plugin field.
+  Within a plugin, `common` is the authority for the default — under aqueduct
+  the overlay base is `<svc>.envs.common`, so that is the only `add_plugins()`
+  call that ever runs — and a `production` module's `DERIVED` re-assignment
+  never erases it. A plugin whose declaration cannot be read is reported on
+  stderr and skipped rather than failing the run.
+
+  Also settable as `openedx_plugins` in `[tool.aqueduct]`.
+
+- **`DiscoveryMethod.OPENEDX_PLUGIN`** — provenance for the above, distinct
+  from `STATIC` because the setting is never assigned in a module the project
+  names.
+
 ## [0.13.0]
 
 ### Added

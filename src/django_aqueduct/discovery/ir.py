@@ -237,11 +237,22 @@ class Default:
 
 
 class DiscoveryMethod(str, Enum):  # noqa: UP042
-    """How a field was discovered — recorded on :class:`Provenance`."""
+    """How a field was discovered — recorded on :class:`Provenance`.
+
+    Attributes:
+        STATIC: AST analysis of a settings module the project named.
+        RUNTIME: Observed by importing the settings module under a snapshot.
+        ENVPARSER: Read from the mitol EnvParser registry.
+        OPENEDX_PLUGIN: AST analysis of an Open edX plugin app's
+            ``plugin_settings()`` function. Distinct from ``STATIC`` because
+            the setting is never assigned in a module the project names — see
+            :mod:`~django_aqueduct.discovery.openedx_plugins`.
+    """
 
     STATIC = "static"
     RUNTIME = "runtime"
     ENVPARSER = "envparser"
+    OPENEDX_PLUGIN = "openedx_plugin"
 
 
 @dataclass(frozen=True)

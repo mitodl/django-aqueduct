@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import pathlib
+import textwrap
 
 import pytest
 from django.core.management import call_command
@@ -603,3 +604,77 @@ def test_removing_an_override_hands_the_field_back(tmp_path: pathlib.Path) -> No
 
     out.write_text(overridden.replace("    POOL_SIZE: int = Field(default=10)\n", ""))
     assert "POOL_SIZE: Any = Field" in _generate(out)
+
+
+def test_openedx_plugins_declares_plugin_settings(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: _Capsys,
+) -> None:
+    """A plugin's plugin_settings() value reaches the rendered model."""
+    from dataclasses import dataclass  # noqa: PLC0415
+
+    package = tmp_path / "cmdplugin"
+    (package / "settings").mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "settings" / "__init__.py").write_text("")
+    (package / "app.py").write_text(
+        textwrap.dedent("""
+            from django.apps import AppConfig
+
+
+            class CmdConfig(AppConfig):
+                name = "cmdplugin"
+                plugin_app = {
+                    "settings_config": {
+                        "lms.djangoapp": {
+                            "common": {"relative_path": "settings.common"}
+                        }
+                    }
+                }
+        """).lstrip()
+    )
+    (package / "settings" / "common.py").write_text(
+        textwrap.dedent("""
+            def plugin_settings(settings):
+                settings.CMD_PLUGIN_FLAG = True
+                # SITE_NAME is declared by the fixture module, which must win.
+                settings.SITE_NAME = "from-plugin"
+        """).lstrip()
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    @dataclass
+    class _EP:
+        name: str = "cmdplugin"
+        value: str = "cmdplugin.app:CmdConfig"
+        dist: None = None
+
+    monkeypatch.setattr(
+        "django_aqueduct.discovery.openedx_plugins.entry_points",
+        lambda group: [_EP()],
+    )
+
+    call_command(
+        "generate_aqueduct_settings",
+        modules="fixture_settings",
+        openedx_plugins="lms.djangoapp",
+    )
+    out = capsys.readouterr().out
+
+    ast.parse(out)
+    assert "CMD_PLUGIN_FLAG: bool = Field(default=True)" in out
+    # The project's own module declares SITE_NAME; the plugin must not win.
+    assert '"from-plugin"' not in out
+
+
+def test_openedx_plugins_rejects_unknown_project_type() -> None:
+    """An unknown entry-point group is a usage error, not an empty result."""
+    from django.core.management.base import CommandError  # noqa: PLC0415
+
+    with pytest.raises(CommandError, match="unknown project type"):
+        call_command(
+            "generate_aqueduct_settings",
+            modules="fixture_settings",
+            openedx_plugins="worker.djangoapp",
+        )

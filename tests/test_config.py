@@ -146,3 +146,18 @@ def test_invalid_report_format_raises(tmp_path: Path) -> None:
     )
     with pytest.raises(ConfigError, match="dependency_surface_report_format"):
         load_config(root)
+
+
+def test_openedx_plugins_config(tmp_path: Path) -> None:
+    root = _write_pyproject(
+        tmp_path, "[tool.aqueduct]\nopenedx_plugins = 'cms.djangoapp'\n"
+    )
+    assert load_config(root).openedx_plugins == "cms.djangoapp"
+
+
+def test_openedx_plugins_rejects_unknown_project_type(tmp_path: Path) -> None:
+    root = _write_pyproject(
+        tmp_path, "[tool.aqueduct]\nopenedx_plugins = 'worker.djangoapp'\n"
+    )
+    with pytest.raises(ConfigError, match="openedx_plugins"):
+        load_config(root)
