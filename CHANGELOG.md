@@ -39,15 +39,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Precedence: the project's own `--modules` always win over a plugin field.
   Within a plugin, `common` is the authority for the default — under aqueduct
   the overlay base is `<svc>.envs.common`, so that is the only `add_plugins()`
-  call that ever runs — and a `production` module's `DERIVED` re-assignment
-  never erases it. A plugin whose declaration cannot be read is reported on
-  stderr and skipped rather than failing the run.
+  call that ever runs — and no `production` value displaces it, whether that
+  value is an `ENV_TOKENS` passthrough or a concrete literal. `production` only
+  supplies a default for a setting `common` declares without a static value.
+  Plugins are merged with one another only after each has been resolved
+  internally, so one plugin's `production` module cannot override another's
+  `common` default; a setting two different plugins both declare has no static
+  answer, so the first in entry-point-name order is kept and the collision is
+  reported on stderr.
+
+  A plugin whose declaration cannot be read is reported on stderr and skipped
+  rather than failing the run. That includes a `plugin_app` the static resolver
+  cannot interpret — built by a call, spliced with `**`, or keyed by a constant
+  outside the framework's own — which is reported as unreadable instead of
+  being treated as "declares no settings" and silently dropping every field the
+  plugin contributes.
 
   Also settable as `openedx_plugins` in `[tool.aqueduct]`.
 
 - **`DiscoveryMethod.OPENEDX_PLUGIN`** — provenance for the above, distinct
   from `STATIC` because the setting is never assigned in a module the project
   names.
+
+### Changed
+
+- **Module source resolution no longer imports anything.**
+  `StaticModuleInspector` located a module's source with
+  `importlib.util.find_spec`, which imports the module's *parent packages* to
+  find it — so resolving `some_plugin.settings.common` executed
+  `some_plugin/__init__.py`, breaking codegen v2's no-execution contract and
+  allowing arbitrary third-party side effects during generation. Dotted paths
+  are now resolved one segment at a time against `sys.meta_path`, threading
+  each parent's search locations through by hand
+  (`django_aqueduct.discovery.static.resolve_module_source`). Only the error
+  text changes for callers; `ImportError` is still what a module that cannot
+  be located raises.
 
 ## [0.13.0]
 

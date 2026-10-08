@@ -1,8 +1,8 @@
 """Tests for Open edX plugin-app settings discovery.
 
 Every case writes a real package tree on disk and puts it on ``sys.path``, so
-the module resolution under test (``find_spec`` → source file → AST) is the
-same code path a real generation run takes. Entry points are faked at the
+the module resolution under test (meta-path finders → source file → AST) is
+the same code path a real generation run takes. Entry points are faked at the
 ``entry_points`` call site because manufacturing installed distribution
 metadata would test setuptools, not this module.
 """
@@ -445,3 +445,287 @@ def test_rejects_unknown_project_type():
     """A typo'd project type is a caller error, not a silent empty result."""
     with pytest.raises(PluginDiscoveryError, match="unknown project type"):
         discover_openedx_plugin_settings("worker.djangoapp")
+
+
+# ---------------------------------------------------------------------------
+# No-execution contract
+# ---------------------------------------------------------------------------
+
+
+def test_no_plugin_code_is_executed(plugin_tree):
+    """Resolving a module must not run the package __init__ files above it.
+
+    ``importlib.util.find_spec`` imports a module's parent packages to find it,
+    so a plugin's ``__init__.py`` would run during generation. These two blow
+    up if anything imports them.
+    """
+    boom = 'raise RuntimeError("plugin code executed during discovery")\n'
+    plugin_tree(
+        "explodeplugin",
+        {
+            "__init__.py": boom,
+            "settings/__init__.py": boom,
+            "app.py": """
+                from django.apps import AppConfig
+
+
+                class ExplodeConfig(AppConfig):
+                    name = "explodeplugin"
+                    plugin_app = {
+                        "settings_config": {
+                            "lms.djangoapp": {
+                                "common": {"relative_path": "settings.common"}
+                            }
+                        }
+                    }
+            """,
+            "settings/common.py": """
+                def plugin_settings(settings):
+                    settings.EXPLODE_SETTING = "safe"
+            """,
+        },
+    )
+    entry = _FakeEntryPoint("explodeplugin", "explodeplugin.app:ExplodeConfig")
+    with _entry_points(entry):
+        result = discover_openedx_plugin_settings("lms.djangoapp")
+
+    assert result.warnings == []
+    assert [f.name for f in result.fields] == ["EXPLODE_SETTING"]
+    assert "explodeplugin" not in sys.modules
+
+
+# ---------------------------------------------------------------------------
+# Unreadable declarations warn rather than vanishing
+# ---------------------------------------------------------------------------
+
+
+def test_computed_plugin_app_warns(plugin_tree):
+    """A plugin_app built by a call cannot be read — say so, don't drop it."""
+    plugin_tree(
+        "computedplugin",
+        {
+            "app.py": """
+                from django.apps import AppConfig
+
+                from computedplugin.helpers import build_config
+
+
+                class ComputedConfig(AppConfig):
+                    name = "computedplugin"
+                    plugin_app = build_config()
+            """,
+            "helpers.py": "def build_config():\n    return {}\n",
+        },
+    )
+    entry = _FakeEntryPoint("computedplugin", "computedplugin.app:ComputedConfig")
+    with _entry_points(entry):
+        found = list(iter_plugin_settings_modules("lms.djangoapp"))
+
+    assert len(found) == 1
+    assert isinstance(found[0], str)
+    assert "not a dict literal" in found[0]
+    assert "not discoverable" in found[0]
+
+
+def test_unresolvable_plugin_app_key_warns(plugin_tree):
+    """A key outside the known-constant table is unreadable, not "absent"."""
+    plugin_tree(
+        "opaqueplugin",
+        {
+            "app.py": """
+                from django.apps import AppConfig
+
+                from opaqueplugin.constants import MyKeys
+
+
+                class OpaqueConfig(AppConfig):
+                    name = "opaqueplugin"
+                    plugin_app = {
+                        MyKeys.SETTINGS: {
+                            "lms.djangoapp": {"common": {}},
+                        },
+                    }
+            """,
+            "constants.py": "class MyKeys:\n    SETTINGS = 'settings_config'\n",
+        },
+    )
+    entry = _FakeEntryPoint("opaqueplugin", "opaqueplugin.app:OpaqueConfig")
+    with _entry_points(entry):
+        found = list(iter_plugin_settings_modules("lms.djangoapp"))
+
+    assert len(found) == 1
+    assert isinstance(found[0], str)
+    assert "MyKeys.SETTINGS" in found[0]
+    assert "could not be resolved statically" in found[0]
+
+
+def test_computed_relative_path_warns_and_falls_back(plugin_tree):
+    """A non-literal relative_path still yields a module, but not silently."""
+    plugin_tree(
+        "relpathplugin",
+        {
+            "app.py": """
+                from django.apps import AppConfig
+
+                SUFFIX = "common"
+
+
+                class RelPathConfig(AppConfig):
+                    name = "relpathplugin"
+                    plugin_app = {
+                        "settings_config": {
+                            "lms.djangoapp": {
+                                "common": {"relative_path": "settings." + SUFFIX}
+                            }
+                        }
+                    }
+            """,
+            "settings.py": "def plugin_settings(settings):\n    pass\n",
+        },
+    )
+    entry = _FakeEntryPoint("relpathplugin", "relpathplugin.app:RelPathConfig")
+    with _entry_points(entry):
+        found = list(iter_plugin_settings_modules("lms.djangoapp"))
+
+    warnings = [item for item in found if isinstance(item, str)]
+    modules = [item for item in found if not isinstance(item, str)]
+    assert len(warnings) == 1
+    assert "relative_path is not a string literal" in warnings[0]
+    assert [m.module_path for m in modules] == ["relpathplugin.settings"]
+
+
+# ---------------------------------------------------------------------------
+# Merge policy
+# ---------------------------------------------------------------------------
+
+
+def _merge_app(package: str, name: str) -> str:
+    """Return an apps.py declaring both settings modules for *package*."""
+    return f"""
+        from django.apps import AppConfig
+
+
+        class {name}(AppConfig):
+            name = "{package}"
+            plugin_app = {{
+                "settings_config": {{
+                    "lms.djangoapp": {{
+                        "common": {{"relative_path": "settings.common"}},
+                        "production": {{"relative_path": "settings.production"}},
+                    }}
+                }}
+            }}
+    """
+
+
+def test_production_literal_does_not_override_common_literal(plugin_tree):
+    """Only common runs under aqueduct, so its value is the live default."""
+    plugin_tree(
+        "overrideplugin",
+        {
+            "app.py": _merge_app("overrideplugin", "OverrideConfig"),
+            "settings/common.py": """
+                def plugin_settings(settings):
+                    settings.FLAG = False
+            """,
+            "settings/production.py": """
+                def plugin_settings(settings):
+                    settings.FLAG = True
+            """,
+        },
+    )
+    entry = _FakeEntryPoint("overrideplugin", "overrideplugin.app:OverrideConfig")
+    with _entry_points(entry):
+        result = discover_openedx_plugin_settings("lms.djangoapp")
+
+    (flag,) = result.fields
+    assert result.warnings == []
+    assert flag.default.literal is False
+
+
+def test_production_literal_fills_a_derived_common(plugin_tree):
+    """A common module with no static value still gets a usable default."""
+    plugin_tree(
+        "fillplugin",
+        {
+            "app.py": _merge_app("fillplugin", "FillConfig"),
+            "settings/common.py": """
+                def plugin_settings(settings):
+                    settings.FILLED = settings.SOMETHING_ELSE
+            """,
+            "settings/production.py": """
+                def plugin_settings(settings):
+                    settings.FILLED = "concrete"
+            """,
+        },
+    )
+    entry = _FakeEntryPoint("fillplugin", "fillplugin.app:FillConfig")
+    with _entry_points(entry):
+        result = discover_openedx_plugin_settings("lms.djangoapp")
+
+    (filled,) = result.fields
+    assert filled.default.strategy is DefaultStrategy.LITERAL
+    assert filled.default.literal == "concrete"
+
+
+def test_one_plugins_production_cannot_override_anothers_common(plugin_tree):
+    """Cross-plugin collisions are resolved per plugin first, and reported."""
+    plugin_tree(
+        "acollide",
+        {
+            "app.py": """
+                from django.apps import AppConfig
+
+
+                class ACollideConfig(AppConfig):
+                    name = "acollide"
+                    plugin_app = {
+                        "settings_config": {
+                            "lms.djangoapp": {
+                                "common": {"relative_path": "settings.common"}
+                            }
+                        }
+                    }
+            """,
+            "settings/common.py": """
+                def plugin_settings(settings):
+                    settings.SHARED_FLAG = False
+            """,
+        },
+    )
+    plugin_tree(
+        "zcollide",
+        {
+            "app.py": """
+                from django.apps import AppConfig
+
+
+                class ZCollideConfig(AppConfig):
+                    name = "zcollide"
+                    plugin_app = {
+                        "settings_config": {
+                            "lms.djangoapp": {
+                                "production": {"relative_path": "settings.production"}
+                            }
+                        }
+                    }
+            """,
+            "settings/production.py": """
+                def plugin_settings(settings):
+                    settings.SHARED_FLAG = True
+            """,
+        },
+    )
+    entries = (
+        _FakeEntryPoint("acollide", "acollide.app:ACollideConfig"),
+        _FakeEntryPoint("zcollide", "zcollide.app:ZCollideConfig"),
+    )
+    with _entry_points(*entries):
+        result = discover_openedx_plugin_settings("lms.djangoapp")
+
+    (flag,) = result.fields
+    assert flag.default.literal is False
+    assert len(result.warnings) == 1
+    assert "SHARED_FLAG" in result.warnings[0]
+    assert "'acollide'" in result.warnings[0]
+    assert "'zcollide'" in result.warnings[0]

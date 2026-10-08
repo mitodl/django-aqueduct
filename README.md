@@ -424,6 +424,11 @@ constant-reference spelling works as well as plain string keys. The resolved
 settings module is then parsed for `settings.UPPERCASE = <expr>` assignments
 inside `plugin_settings()`.
 
+That contract covers *locating* the source too, not only reading it: module
+paths are resolved a segment at a time against the meta-path finders rather
+than with `importlib.util.find_spec`, which imports a module's parent packages
+to find it and so would run every plugin's `__init__.py` during generation.
+
 Field semantics follow the rest of codegen v2: a literal becomes
 `LITERAL`/`FACTORY`, a reproducible expression `EXPR`, a secret-looking name
 `REDACTED`, and anything reading another setting — the
@@ -435,10 +440,24 @@ host already owns, so they declare nothing and are skipped.
 Precedence: a setting your own `--modules` declare always wins. Within a
 plugin, `common` is the authority for the default (under aqueduct the overlay
 base is `<svc>.envs.common`, so that is the only `add_plugins()` call that
-runs), and a `production` module's `DERIVED` re-assignment never erases it.
+runs) — a `production` value never displaces it, whether that value is a
+`DERIVED` `ENV_TOKENS` passthrough or a concrete literal. The one thing
+`production` does contribute is a default for a setting `common` declares
+without a static value.
+
+Plugins are merged with each other only after each one has been resolved
+internally, so one plugin's `production` module can never override another's
+`common` default. When two *different* plugins declare the same setting there
+is no static answer — at runtime whichever `add_plugins()` reaches last wins —
+so the first in entry-point-name order is kept (unless it has no value and the
+other does) and the collision is reported on stderr. Pin the setting in your
+own `--modules` if you need a specific one.
 
 One malformed plugin cannot fail a generation run — it is reported on stderr
-and skipped.
+and skipped. A `plugin_app` the static resolver cannot read (built by a call,
+spliced with `**`, or keyed by a constant outside the framework's own) is
+reported as unreadable rather than treated as "declares no settings", so its
+fields never go missing in silence.
 
 ---
 
