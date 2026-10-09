@@ -26,6 +26,11 @@ jobs:
     name: Publish to PyPI
     runs-on: ubuntu-latest
     environment: pypi
+    # The push trigger is already main-only, but workflow_dispatch can target
+    # any branch, and the `pypi` environment has no deployment branch policy,
+    # so without this an unreviewed feature branch could be published to PyPI
+    # under the real package name, bypassing main's pull-request ruleset.
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: write # push the release tag
       id-token: write # OIDC trusted publishing
