@@ -26,7 +26,10 @@ from __future__ import annotations
 
 import ast
 import builtins
+import logging
 import sys
+import threading
+import types
 from collections.abc import Iterator, Sequence
 from importlib.machinery import ModuleSpec
 from pathlib import Path
@@ -42,6 +45,26 @@ from django_aqueduct.discovery.ir import (
     TypeRef,
 )
 from django_aqueduct.discovery.secrets import looks_secret
+
+logger = logging.getLogger(__name__)
+
+#: Distinguishes "absent from ``sys.modules``" from a legitimately stored
+#: ``None`` (the import-blocking idiom), which must be put back, not deleted.
+_MISSING = object()
+
+#: Serializes :class:`_ParentPathScope`, whose stubs are process-global.  Two
+#: concurrent walks through a shared parent segment would otherwise retract
+#: each other's stubs mid-resolution.  Reentrant so a finder that re-enters
+#: resolution on the *same* thread does not deadlock.
+#:
+#: Cross-thread lock ordering is not handled, and cannot be from here: the walk
+#: calls third-party ``find_spec`` implementations while holding this, so a
+#: finder that triggers an import can block on importlib's lock for a module
+#: whose body is, on another thread, calling into resolution and blocking on
+#: this.  Generation runs single-threaded from a management command, and
+#: resolution is never invoked from a module body, so that ordering does not
+#: arise; it would if this were ever driven concurrently from imported code.
+_RESOLUTION_LOCK = threading.RLock()
 
 # Names that are always available in generated code without an import.
 _BUILTIN_NAMES: frozenset[str] = frozenset(dir(builtins))
@@ -347,9 +370,109 @@ def _find_spec_without_import(
             spec: ModuleSpec | None = find_spec(qualified, search_path)
         except (ImportError, AttributeError, ValueError):
             continue
+        except KeyError:
+            # A finder reached for ``sys.modules[parent].__path__`` on a parent
+            # this function has deliberately not imported.
+            # :class:`_ParentPathScope` makes that lookup succeed for the chain
+            # being walked, so reaching here means something it does not cover.
+            # Degrade to "not found" — which the caller reports per plugin —
+            # rather than escaping as a bare KeyError and failing the whole
+            # generation run over one plugin.  Logged because the message the
+            # caller ends up printing ("ensure it is on sys.path") will be
+            # wrong for whatever this actually was.
+            logger.debug(
+                "find_spec(%r) raised KeyError in %r; treating as not found",
+                qualified,
+                finder,
+                exc_info=True,
+            )
+            continue
         if spec is not None:
             return spec
     return None
+
+
+class _ParentPathScope:
+    """Let ``sys.modules[parent].__path__`` resolve without importing *parent*.
+
+    A sub-package with no ``__init__.py`` is a PEP 420 namespace package, which
+    the import system is perfectly happy to import — the Open edX plugin
+    framework loads plugin settings with a plain
+    :func:`importlib.import_module`, so plugins ship this layout and are right
+    to.  Resolving one *without* importing is the part that needs care:
+    building the spec constructs an ``importlib._NamespacePath``, whose
+    ``__init__`` reads ``sys.modules[parent].__path__`` to anchor itself, and
+    the parent is exactly what this module refuses to import.  The lookup
+    raises ``KeyError``.
+
+    So publish the one fact that lookup needs and nothing else: a bare
+    :class:`types.ModuleType` carrying the ``__path__`` already resolved for
+    that parent.  Publishing it imports nothing and runs no module code — the
+    finders still do their ordinary work of locating specs, they just stop
+    tripping over the absent parent.
+
+    A published stub is globally visible for as long as it is in
+    ``sys.modules``, so the window is kept as small as the mechanism allows:
+
+    * ``_NamespacePath`` consults only its *immediate* parent, so at most one
+      stub is ever live — publishing a level retracts the one above it.
+    * Entering takes :data:`_RESOLUTION_LOCK`.  Without it, two walks sharing a
+      parent segment interleave so that one retracts the stub the other is
+      relying on, and with the ``KeyError`` guard above that surfaces not as a
+      crash but as a plugin silently missing from the generated model.
+    * Retraction is by *identity*: if something else has rebound the name in
+      the meantime it is left alone, and any value the stub displaced is put
+      back rather than deleted.
+    """
+
+    def __init__(self) -> None:
+        """Start with nothing published."""
+        self._live: tuple[str, types.ModuleType, object] | None = None
+
+    def __enter__(self) -> _ParentPathScope:
+        """Take the resolution lock."""
+        _RESOLUTION_LOCK.acquire()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        """Retract any live stub, then release the lock."""
+        try:
+            self._retract()
+        finally:
+            _RESOLUTION_LOCK.release()
+
+    def _retract(self) -> None:
+        if self._live is None:
+            return
+        qualified, stub, displaced = self._live
+        self._live = None
+        if sys.modules.get(qualified) is not stub:
+            # Rebound by something else; not ours to remove.
+            return
+        if displaced is _MISSING:
+            # ``pop`` rather than ``del``: the lock serializes other
+            # resolutions, not arbitrary code, so the name can vanish between
+            # the check above and here — and a KeyError raised out of
+            # ``__exit__`` is the very failure this module exists to stop.
+            sys.modules.pop(qualified, None)
+        else:
+            sys.modules[qualified] = displaced  # type: ignore[assignment]
+
+    def publish(self, qualified: str, search_locations: Sequence[str]) -> None:
+        """Make *qualified* resolvable as a package rooted at *search_locations*."""
+        self._retract()
+        existing = sys.modules.get(qualified, _MISSING)
+        if existing is not _MISSING and hasattr(existing, "__path__"):
+            # Genuinely imported as a package — its own ``__path__`` wins.
+            return
+        # Anything else occupying the name (the ``sys.modules[x] = None``
+        # import-blocking idiom, a test double, a non-package module) has no
+        # ``__path__`` for the finder to read, so stand in for it and put it
+        # back afterwards.
+        stub = types.ModuleType(qualified)
+        stub.__path__ = list(search_locations)
+        sys.modules[qualified] = stub
+        self._live = (qualified, stub, existing)
 
 
 def resolve_module_source(module_path: str) -> Path:
@@ -366,6 +489,14 @@ def resolve_module_source(module_path: str) -> Path:
     ``submodule_search_locations`` through by hand — the one thing the import
     system would otherwise do for us by importing the parent.
 
+    A parent segment with no ``__init__.py`` needs one thing more.  It is a
+    PEP 420 namespace package, and resolving a name inside one builds an
+    ``importlib._NamespacePath`` that anchors itself on
+    ``sys.modules[parent].__path__`` — a parent this function has not
+    imported.  :class:`_ParentPathScope` publishes that one attribute for the
+    segment currently being descended into, so the layout resolves without any
+    plugin code running.
+
     Args:
         module_path: Dotted import path.
 
@@ -379,30 +510,36 @@ def resolve_module_source(module_path: str) -> Path:
     """
     parts = module_path.split(".")
     search_path: Sequence[str] | None = None
-    for index in range(len(parts)):
-        qualified = ".".join(parts[: index + 1])
-        spec = _find_spec_without_import(qualified, search_path)
-        if spec is None:
-            missing = "module" if index == len(parts) - 1 else "parent package"
-            raise ImportError(
-                f"django-aqueduct could not locate source for "
-                f"'{module_path}': no {missing} '{qualified}'. "
-                f"Ensure it is on sys.path."
-            )
-        if index == len(parts) - 1:
-            if spec.origin is None or not spec.origin.endswith(".py"):
+    with _ParentPathScope() as scope:
+        for index in range(len(parts)):
+            qualified = ".".join(parts[: index + 1])
+            spec = _find_spec_without_import(qualified, search_path)
+            if spec is None:
+                missing = "module" if index == len(parts) - 1 else "parent package"
                 raise ImportError(
                     f"django-aqueduct could not locate source for "
-                    f"'{module_path}': '{qualified}' has no Python source "
-                    f"({spec.origin or 'namespace package'})."
+                    f"'{module_path}': no {missing} '{qualified}'. "
+                    f"Ensure it is on sys.path."
                 )
-            return Path(spec.origin)
-        if spec.submodule_search_locations is None:
-            raise ImportError(
-                f"django-aqueduct could not locate source for "
-                f"'{module_path}': '{qualified}' is not a package."
-            )
-        search_path = list(spec.submodule_search_locations)
+            if index == len(parts) - 1:
+                if spec.origin is None or not spec.origin.endswith(".py"):
+                    raise ImportError(
+                        f"django-aqueduct could not locate source for "
+                        f"'{module_path}': '{qualified}' has no Python source "
+                        f"({spec.origin or 'namespace package'})."
+                    )
+                return Path(spec.origin)
+            if spec.submodule_search_locations is None:
+                raise ImportError(
+                    f"django-aqueduct could not locate source for "
+                    f"'{module_path}': '{qualified}' is not a package."
+                )
+            # Materialized before publishing: a namespace parent's locations
+            # are a lazy ``_NamespacePath`` that resolves against *its* parent,
+            # which is still the live stub at this point.  Publishing this
+            # level retracts that one.
+            search_path = list(spec.submodule_search_locations)
+            scope.publish(qualified, search_path)
     # Unreachable: ``str.split`` always yields at least one segment.
     raise ImportError(f"django-aqueduct could not resolve '{module_path}'.")
 
