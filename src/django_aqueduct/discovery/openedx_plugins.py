@@ -68,6 +68,7 @@ and reported (see :func:`_merge_across_plugins`).
 from __future__ import annotations
 
 import ast
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -87,6 +88,8 @@ from django_aqueduct.discovery.static import (
     _iter_scoped_statements,
     resolve_module_source,
 )
+
+logger = logging.getLogger(__name__)
 
 #: Entry-point groups the Open edX plugin framework registers AppConfigs under.
 LMS_PROJECT_TYPE = "lms.djangoapp"
@@ -306,7 +309,12 @@ def iter_plugin_settings_modules(
         try:
             source_path = resolve_module_source(module_name)
             tree = ast.parse(source_path.read_text(encoding="utf-8"))
-        except (OSError, SyntaxError, ImportError) as exc:
+        except (OSError, SyntaxError, ImportError, KeyError) as exc:
+            # KeyError for the same reason as the settings-module read below:
+            # resolution touches ``sys.modules`` for namespace parents, and a
+            # plugin that cannot be read must cost only its own fields.  This
+            # site resolves the AppConfig module itself, so a plugin whose
+            # *top-level* package is a namespace one arrives here first.
             yield f"{entry_point.name}: cannot read {module_name!r}: {exc}"
             continue
 
@@ -650,7 +658,15 @@ def discover_openedx_plugin_settings(project_type: str) -> PluginDiscoveryResult
             # namespace package, which the resolver keeps populated — but a
             # plugin that cannot be read must only cost its own fields, never
             # the whole run, so the escape hatch is here too rather than only
-            # at the one site inside the resolver known to raise it.
+            # at the one site inside the resolver known to raise it.  Logged
+            # because this also spans the AST walk, where a KeyError would be
+            # an internal bug wearing a "cannot read settings module" label.
+            logger.debug(
+                "reading settings module %r for %s failed",
+                item.module_path,
+                item.app_name,
+                exc_info=True,
+            )
             result.warnings.append(
                 f"{item.app_name}: cannot read settings module "
                 f"{item.module_path!r}: {exc}"

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from django_aqueduct.discovery.static import resolve_module_source
+from django_aqueduct.discovery.static import _RESOLUTION_LOCK, resolve_module_source
 
 
 @pytest.fixture()
@@ -150,6 +150,10 @@ def test_sys_modules_is_left_untouched_when_resolution_fails(tree):
         resolve_module_source("failplugin.settings.nosuchmodule")
 
     assert sys.modules == before
+    # The resolution lock is released on the exception path too; a refactor
+    # that moved the release out of a finally would hang every later call.
+    assert _RESOLUTION_LOCK.acquire(blocking=False)
+    _RESOLUTION_LOCK.release()
 
 
 def test_a_regular_package_chain_also_leaves_sys_modules_clean(tree):

@@ -55,7 +55,15 @@ _MISSING = object()
 #: Serializes :class:`_ParentPathScope`, whose stubs are process-global.  Two
 #: concurrent walks through a shared parent segment would otherwise retract
 #: each other's stubs mid-resolution.  Reentrant so a finder that re-enters
-#: resolution on the same thread does not deadlock.
+#: resolution on the *same* thread does not deadlock.
+#:
+#: Cross-thread lock ordering is not handled, and cannot be from here: the walk
+#: calls third-party ``find_spec`` implementations while holding this, so a
+#: finder that triggers an import can block on importlib's lock for a module
+#: whose body is, on another thread, calling into resolution and blocking on
+#: this.  Generation runs single-threaded from a management command, and
+#: resolution is never invoked from a module body, so that ordering does not
+#: arise; it would if this were ever driven concurrently from imported code.
 _RESOLUTION_LOCK = threading.RLock()
 
 # Names that are always available in generated code without an import.
@@ -442,7 +450,11 @@ class _ParentPathScope:
             # Rebound by something else; not ours to remove.
             return
         if displaced is _MISSING:
-            del sys.modules[qualified]
+            # ``pop`` rather than ``del``: the lock serializes other
+            # resolutions, not arbitrary code, so the name can vanish between
+            # the check above and here — and a KeyError raised out of
+            # ``__exit__`` is the very failure this module exists to stop.
+            sys.modules.pop(qualified, None)
         else:
             sys.modules[qualified] = displaced  # type: ignore[assignment]
 
