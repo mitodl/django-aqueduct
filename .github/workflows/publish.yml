@@ -11,6 +11,12 @@ on:
     branches: ["main"]
     paths:
       - "pyproject.toml"
+  # Manual escape hatch for a release that got stuck: if the publish step fails,
+  # no tag is created and the push trigger won't fire again (a fix to this
+  # workflow doesn't touch pyproject.toml). The "Check for a new version" guard
+  # below makes a re-run a no-op once the version is tagged, so this is safe to
+  # trigger at any time.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,6 +26,11 @@ jobs:
     name: Publish to PyPI
     runs-on: ubuntu-latest
     environment: pypi
+    # The push trigger is already main-only, but workflow_dispatch can target
+    # any branch, and the `pypi` environment has no deployment branch policy,
+    # so without this an unreviewed feature branch could be published to PyPI
+    # under the real package name, bypassing main's pull-request ruleset.
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: write # push the release tag
       id-token: write # OIDC trusted publishing
@@ -76,7 +87,10 @@ jobs:
 
       - name: Publish to PyPI
         if: steps.check.outputs.new == 'true'
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        # v1.14.2 or newer is required: hatchling now emits core metadata 2.5,
+        # and the Twine bundled in v1.14.0/v1.14.1 rejects it with
+        # "InvalidDistribution: '2.5' is not a valid metadata version".
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
 
       - name: Tag the release
         # Only after a successful publish, so a tag always means "this version is
