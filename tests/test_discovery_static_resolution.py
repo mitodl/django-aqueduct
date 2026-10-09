@@ -12,6 +12,7 @@ parent is what used to raise a bare ``KeyError`` and abort generation.
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -127,24 +128,46 @@ def test_nothing_in_the_chain_is_executed(tree):
 
 
 def test_sys_modules_is_left_untouched(tree):
-    """The stubs are scaffolding, not state: nothing survives the call."""
+    """The stubs are scaffolding, not state: nothing survives the call.
+
+    Compares identities, not just keys -- a stub that displaced an existing
+    binding and put back the wrong object would keep the key set intact.
+    """
     tree({"cleanplugin/settings/common.py": "SETTING = 1\n"}, packages=())
-    before = set(sys.modules)
+    before = dict(sys.modules)
 
     resolve_module_source("cleanplugin.settings.common")
 
-    assert set(sys.modules) == before
+    assert sys.modules == before
 
 
 def test_sys_modules_is_left_untouched_when_resolution_fails(tree):
     """Including when the walk aborts partway down."""
     tree({"failplugin/settings/common.py": "SETTING = 1\n"}, packages=())
-    before = set(sys.modules)
+    before = dict(sys.modules)
 
     with pytest.raises(ImportError):
         resolve_module_source("failplugin.settings.nosuchmodule")
 
-    assert set(sys.modules) == before
+    assert sys.modules == before
+
+
+def test_a_regular_package_chain_also_leaves_sys_modules_clean(tree):
+    """The ordinary layout is stubbed too, so it has to clean up too.
+
+    The stub is published for every parent, namespace or not -- a regular
+    top-level package with a namespace ``settings/`` under it needs the stub on
+    the *regular* parent, so it cannot be gated on the parent's own kind.
+    """
+    tree(
+        {"tidyplugin/settings/common.py": "SETTING = 1\n"},
+        packages=("tidyplugin", "tidyplugin/settings"),
+    )
+    before = dict(sys.modules)
+
+    resolve_module_source("tidyplugin.settings.common")
+
+    assert sys.modules == before
 
 
 def test_a_genuinely_imported_parent_is_not_replaced(tree):
@@ -155,10 +178,73 @@ def test_a_genuinely_imported_parent_is_not_replaced(tree):
     real = importlib.import_module("liveplugin")
     try:
         resolve_module_source("liveplugin.settings.common")
+
         assert sys.modules["liveplugin"] is real
+        # Checked before the cleanup below, which would otherwise mask a
+        # child stub that outlived the call.
+        assert "liveplugin.settings" not in sys.modules
     finally:
         for name in [m for m in sys.modules if m.split(".")[0] == "liveplugin"]:
             del sys.modules[name]
+
+
+class _RebindingFinder:
+    """Rebinds *name* in ``sys.modules`` the first time *trigger* is looked up.
+
+    Stands in for anything that can bind a name while the walk is mid-flight --
+    a concurrent importer, another finder -- without depending on thread
+    timing. Claims nothing itself, so resolution proceeds as normal.
+    """
+
+    def __init__(self, trigger: str, name: str, module: types.ModuleType) -> None:
+        self.trigger = trigger
+        self.name = name
+        self.module = module
+
+    def find_spec(self, fullname, path=None, target=None):  # noqa: ARG002
+        if fullname == self.trigger:
+            sys.modules[self.name] = self.module
+        return None
+
+
+def test_a_name_rebound_mid_walk_is_not_deleted(tree):
+    """Teardown removes the stub by identity, not by name.
+
+    Popping by name makes resolution delete a module it never created,
+    unloading a live module out from under whoever imported it.
+    """
+    root = tree({"stolenplugin/settings/common.py": "SETTING = 1\n"}, packages=())
+    intruder = types.ModuleType("stolenplugin")
+    # Given a real __path__ so the walk still completes and the assertion is
+    # about the teardown rather than about resolution failing.
+    intruder.__path__ = [str(root / "stolenplugin")]
+    finder = _RebindingFinder("stolenplugin.settings", "stolenplugin", intruder)
+    sys.meta_path.insert(0, finder)
+    try:
+        resolve_module_source("stolenplugin.settings.common")
+
+        assert sys.modules.get("stolenplugin") is intruder
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop("stolenplugin", None)
+
+
+def test_a_parent_bound_to_none_is_restored_not_deleted(tree):
+    """``sys.modules[name] = None`` is the import-blocking idiom, not absence.
+
+    It has no ``__path__``, so the walk must stand in for it -- and then put
+    the ``None`` back rather than deleting it, which would quietly lift the
+    block.
+    """
+    tree({"blockedplugin/settings/common.py": "SETTING = 1\n"}, packages=())
+    sys.modules["blockedplugin"] = None
+    try:
+        resolved = resolve_module_source("blockedplugin.settings.common")
+
+        assert resolved.name == "common.py"
+        assert sys.modules["blockedplugin"] is None
+    finally:
+        sys.modules.pop("blockedplugin", None)
 
 
 def test_a_namespace_package_named_as_the_target_is_still_an_error(tree):

@@ -32,15 +32,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `resolve_module_source` now publishes exactly what that lookup needs, and
   nothing more: a bare `types.ModuleType` carrying the `__path__` already
-  resolved for each parent segment, removed again on the way out (including on
+  resolved for the parent segment, removed again on the way out (including on
   an exception), leaving `sys.modules` untouched. Nothing is imported and no
   `__init__.py` executes, so the no-execution contract is intact — there is a
   test asserting a parent with a side effect in its `__init__.py` does not run
-  it. A parent that is genuinely imported already is left alone.
+  it. A parent that is genuinely imported as a package is left alone; anything
+  else occupying the name (including the `sys.modules[x] = None`
+  import-blocking idiom) is displaced for the duration and put back, not
+  deleted.
+
+  Those stubs are process-global while they are live, so the window is kept as
+  small as the mechanism allows. `_NamespacePath` consults only its immediate
+  parent, so at most one stub exists at a time — publishing a level retracts
+  the one above it. Resolution takes a reentrant lock, without which two
+  concurrent walks sharing a parent segment retract each other's stubs (a
+  4-thread loop over a three-level namespace package failed ~20% of
+  resolutions before the lock, 0% after). Retraction is by identity, so a name
+  rebound by someone else mid-walk is never deleted.
 
   `_find_spec_without_import` also catches `KeyError` now, so any
   not-yet-anticipated variant of this degrades to "not found" — a per-plugin
-  warning — rather than killing the run.
+  warning — rather than killing the run, and logs at debug level because the
+  resulting "ensure it is on sys.path" message will be wrong for whatever it
+  actually was. `discover_openedx_plugin_settings` catches `KeyError` around
+  each plugin for the same reason: the cost of an unreadable plugin must stay
+  bounded to that plugin.
 
 ## [0.14.0]
 

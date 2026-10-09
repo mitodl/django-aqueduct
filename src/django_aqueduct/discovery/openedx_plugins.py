@@ -645,7 +645,12 @@ def discover_openedx_plugin_settings(project_type: str) -> PluginDiscoveryResult
         )
         try:
             discovered = inspector.discover()
-        except (ImportError, OSError, SyntaxError) as exc:
+        except (ImportError, OSError, SyntaxError, KeyError) as exc:
+            # KeyError: resolution reads ``sys.modules[parent].__path__`` for a
+            # namespace package, which the resolver keeps populated — but a
+            # plugin that cannot be read must only cost its own fields, never
+            # the whole run, so the escape hatch is here too rather than only
+            # at the one site inside the resolver known to raise it.
             result.warnings.append(
                 f"{item.app_name}: cannot read settings module "
                 f"{item.module_path!r}: {exc}"
