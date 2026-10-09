@@ -5,6 +5,43 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.1]
+
+### Fixed
+
+- **Plugin settings in a namespace package no longer abort generation.** A
+  plugin whose `settings/` directory has no `__init__.py` is a PEP 420
+  namespace package. That imports perfectly well at runtime — the Open edX
+  plugin framework loads plugin settings with a plain
+  `importlib.import_module` — so plugins ship this layout, and several of
+  MIT OL's own do (`edx-sysadmin`, `ol-openedx-chat`, `ol-openedx-chat-xblock`,
+  `rapid-response-xblock`, `ol-openedx-feedback`).
+
+  Resolving one *without* importing is the part that needed fixing. Building
+  the spec for a name inside a namespace package constructs an
+  `importlib._NamespacePath`, whose `__init__` anchors itself on
+  `sys.modules[parent].__path__` — and codegen v2 deliberately never imports
+  the parent. The lookup raised a bare `KeyError` that escaped
+  `discover_openedx_plugin_settings`' per-plugin error handling and failed the
+  entire run, so one such plugin anywhere in the environment took down the
+  whole generation:
+
+  ```
+  KeyError: 'edx_sysadmin'
+  ```
+
+  `resolve_module_source` now publishes exactly what that lookup needs, and
+  nothing more: a bare `types.ModuleType` carrying the `__path__` already
+  resolved for each parent segment, removed again on the way out (including on
+  an exception), leaving `sys.modules` untouched. Nothing is imported and no
+  `__init__.py` executes, so the no-execution contract is intact — there is a
+  test asserting a parent with a side effect in its `__init__.py` does not run
+  it. A parent that is genuinely imported already is left alone.
+
+  `_find_spec_without_import` also catches `KeyError` now, so any
+  not-yet-anticipated variant of this degrades to "not found" — a per-plugin
+  warning — rather than killing the run.
+
 ## [0.14.0]
 
 ### Added

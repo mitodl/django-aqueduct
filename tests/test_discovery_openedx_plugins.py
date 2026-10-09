@@ -42,14 +42,18 @@ def plugin_tree(tmp_path, monkeypatch):
     """Return a factory that writes a plugin package and makes it importable."""
     monkeypatch.syspath_prepend(str(tmp_path))
 
-    def _write(package: str, files: dict[str, str]) -> None:
+    def _write(
+        package: str, files: dict[str, str], *, namespace_sub_packages: bool = False
+    ) -> None:
         root = tmp_path / package
         root.mkdir(parents=True, exist_ok=True)
         (root / "__init__.py").write_text("", encoding="utf-8")
         for relative, body in files.items():
             path = root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
-            if path.parent != root:
+            # namespace_sub_packages omits the sub-package __init__.py, the
+            # PEP 420 layout several Open edX plugins ship their settings in.
+            if path.parent != root and not namespace_sub_packages:
                 init = path.parent / "__init__.py"
                 if not init.exists():
                     init.write_text("", encoding="utf-8")
@@ -492,6 +496,52 @@ def test_no_plugin_code_is_executed(plugin_tree):
     assert result.warnings == []
     assert [f.name for f in result.fields] == ["EXPLODE_SETTING"]
     assert "explodeplugin" not in sys.modules
+
+
+def test_discovers_settings_from_a_namespace_settings_package(plugin_tree):
+    """A plugin whose ``settings/`` has no ``__init__.py`` is read, not skipped.
+
+    PEP 420 makes that directory a namespace package. It imports fine at
+    runtime -- the plugin framework uses a plain ``importlib.import_module`` --
+    and several Open edX plugins ship exactly this layout, so discovery has to
+    cope with it. Resolving one used to raise a bare ``KeyError`` out of
+    ``importlib`` and abort the entire generation run, not merely drop the one
+    plugin, which is why this is an end-to-end case and not only a unit test
+    of the resolver.
+    """
+    plugin_tree(
+        "nssettingsplugin",
+        {
+            "app.py": """
+                from django.apps import AppConfig
+
+
+                class NsSettingsConfig(AppConfig):
+                    name = "nssettingsplugin"
+                    plugin_app = {
+                        "settings_config": {
+                            "lms.djangoapp": {
+                                "common": {"relative_path": "settings.common"}
+                            }
+                        }
+                    }
+            """,
+            "settings/common.py": """
+                def plugin_settings(settings):
+                    settings.NS_REDIRECT_ENABLED = True
+            """,
+        },
+        namespace_sub_packages=True,
+    )
+    entry = _FakeEntryPoint("nssettingsplugin", "nssettingsplugin.app:NsSettingsConfig")
+    with _entry_points(entry):
+        result = discover_openedx_plugin_settings("lms.djangoapp")
+
+    assert result.warnings == []
+    assert [f.name for f in result.fields] == ["NS_REDIRECT_ENABLED"]
+    # Still no imports: the layout is handled by publishing the parent's
+    # __path__, not by giving up and importing it.
+    assert "nssettingsplugin" not in sys.modules
 
 
 # ---------------------------------------------------------------------------
