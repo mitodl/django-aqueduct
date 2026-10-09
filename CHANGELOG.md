@@ -5,6 +5,76 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0]
+
+### Added
+
+- **`--openedx-plugins {lms,cms}.djangoapp`** — discover the settings installed
+  Open edX plugin apps contribute through their `plugin_settings()` hooks.
+
+  A plugin never assigns its settings at module scope in a module the project
+  names; it registers an `AppConfig` under the `lms.djangoapp` /
+  `cms.djangoapp` entry-point group and the host's `common.py` calls
+  `add_plugins()`, which calls `plugin_settings(settings)` to mutate the live
+  settings object. Static discovery therefore produced no field for any of
+  them — and with an env-var source a missing field is not cosmetic:
+  pydantic-settings collects values *per declared field*, so an undeclared
+  `MITX_REDIRECT_ENABLED=false` in the environment was dropped rather than
+  parsed, leaving the setting with no override path at all.
+
+  Discovery stays inside codegen v2's no-execution contract. Distribution
+  metadata names each plugin's `AppConfig`; its `plugin_app` dict is read by
+  parsing that class's source, with the framework's constants
+  (`PluginSettings.CONFIG`, `ProjectType.LMS`, `SettingsType.COMMON`, …)
+  resolved from a table so the constant-reference spelling works as well as
+  plain string keys. The resolved settings module is then parsed for
+  `settings.UPPERCASE = <expr>` assignments inside `plugin_settings()`, reusing
+  `StaticModuleInspector`'s default capture — so literals become
+  `LITERAL`/`FACTORY`, secret-looking names `REDACTED`, and the
+  `settings.ENV_TOKENS.get(...)` passthrough that fills most plugin
+  `production.py` modules becomes `DERIVED`. Augmenting calls
+  (`settings.MIDDLEWARE.extend([...])`) and subscript writes are mutations of a
+  host-owned setting, not declarations, and are skipped.
+
+  Precedence: the project's own `--modules` always win over a plugin field.
+  Within a plugin, `common` is the authority for the default — under aqueduct
+  the overlay base is `<svc>.envs.common`, so that is the only `add_plugins()`
+  call that ever runs — and no `production` value displaces it, whether that
+  value is an `ENV_TOKENS` passthrough or a concrete literal. `production` only
+  supplies a default for a setting `common` declares without a static value.
+  Plugins are merged with one another only after each has been resolved
+  internally, so one plugin's `production` module cannot override another's
+  `common` default; a setting two different plugins both declare has no static
+  answer, so the first in entry-point-name order is kept and the collision is
+  reported on stderr.
+
+  A plugin whose declaration cannot be read is reported on stderr and skipped
+  rather than failing the run. That includes a `plugin_app` the static resolver
+  cannot interpret — built by a call, spliced with `**`, or keyed by a constant
+  outside the framework's own — which is reported as unreadable instead of
+  being treated as "declares no settings" and silently dropping every field the
+  plugin contributes.
+
+  Also settable as `openedx_plugins` in `[tool.aqueduct]`.
+
+- **`DiscoveryMethod.OPENEDX_PLUGIN`** — provenance for the above, distinct
+  from `STATIC` because the setting is never assigned in a module the project
+  names.
+
+### Changed
+
+- **Module source resolution no longer imports anything.**
+  `StaticModuleInspector` located a module's source with
+  `importlib.util.find_spec`, which imports the module's *parent packages* to
+  find it — so resolving `some_plugin.settings.common` executed
+  `some_plugin/__init__.py`, breaking codegen v2's no-execution contract and
+  allowing arbitrary third-party side effects during generation. Dotted paths
+  are now resolved one segment at a time against `sys.meta_path`, threading
+  each parent's search locations through by hand
+  (`django_aqueduct.discovery.static.resolve_module_source`). Only the error
+  text changes for callers; `ImportError` is still what a module that cannot
+  be located raises.
+
 ## [0.13.0]
 
 ### Added

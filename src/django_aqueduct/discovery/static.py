@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import ast
 import builtins
+import sys
 from collections.abc import Iterator, Sequence
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 from typing import NamedTuple
 
@@ -320,6 +322,91 @@ def _assignment_pairs(
     return pairs
 
 
+def _find_spec_without_import(
+    qualified: str, search_path: Sequence[str] | None
+) -> ModuleSpec | None:
+    """Ask the meta-path finders for *qualified*, importing nothing.
+
+    This is what :func:`importlib.util.find_spec` does *after* it has imported
+    the parent package: walk ``sys.meta_path`` and take the first finder that
+    claims the name, handing it the parent's search locations. A module that
+    happens to be imported already reuses its own spec — no new execution, and
+    it is exactly what the import system would report.
+    """
+    module = sys.modules.get(qualified)
+    if module is not None:
+        imported_spec: ModuleSpec | None = getattr(module, "__spec__", None)
+        if imported_spec is not None:
+            return imported_spec
+    for finder in sys.meta_path:
+        # Not every entry on ``sys.meta_path`` implements the modern protocol.
+        find_spec = getattr(finder, "find_spec", None)
+        if find_spec is None:
+            continue
+        try:
+            spec: ModuleSpec | None = find_spec(qualified, search_path)
+        except (ImportError, AttributeError, ValueError):
+            continue
+        if spec is not None:
+            return spec
+    return None
+
+
+def resolve_module_source(module_path: str) -> Path:
+    """Locate a module's ``.py`` source file without importing anything.
+
+    :func:`importlib.util.find_spec` cannot be used for this.  To find a
+    submodule it imports the submodule's *parent packages* — that is how the
+    import system discovers their ``__path__`` — so resolving
+    ``some_plugin.settings.common`` executes ``some_plugin/__init__.py`` and
+    ``some_plugin/settings/__init__.py``.  That is third-party code running
+    during generation, which codegen v2's no-execution contract forbids.
+
+    Each dotted segment is therefore resolved in turn, threading the parent's
+    ``submodule_search_locations`` through by hand — the one thing the import
+    system would otherwise do for us by importing the parent.
+
+    Args:
+        module_path: Dotted import path.
+
+    Returns:
+        Path to the module's Python source.
+
+    Raises:
+        ImportError: The module could not be located, a parent segment is not
+            a package, or the module has no Python source (an extension
+            module, a frozen module, a namespace package).
+    """
+    parts = module_path.split(".")
+    search_path: Sequence[str] | None = None
+    for index in range(len(parts)):
+        qualified = ".".join(parts[: index + 1])
+        spec = _find_spec_without_import(qualified, search_path)
+        if spec is None:
+            missing = "module" if index == len(parts) - 1 else "parent package"
+            raise ImportError(
+                f"django-aqueduct could not locate source for "
+                f"'{module_path}': no {missing} '{qualified}'. "
+                f"Ensure it is on sys.path."
+            )
+        if index == len(parts) - 1:
+            if spec.origin is None or not spec.origin.endswith(".py"):
+                raise ImportError(
+                    f"django-aqueduct could not locate source for "
+                    f"'{module_path}': '{qualified}' has no Python source "
+                    f"({spec.origin or 'namespace package'})."
+                )
+            return Path(spec.origin)
+        if spec.submodule_search_locations is None:
+            raise ImportError(
+                f"django-aqueduct could not locate source for "
+                f"'{module_path}': '{qualified}' is not a package."
+            )
+        search_path = list(spec.submodule_search_locations)
+    # Unreachable: ``str.split`` always yields at least one segment.
+    raise ImportError(f"django-aqueduct could not resolve '{module_path}'.")
+
+
 class StaticModuleInspector:
     """Discover settings by parsing a module's source with :mod:`ast`.
 
@@ -339,15 +426,7 @@ class StaticModuleInspector:
     def _resolve_source(self) -> Path:
         if self._source_file is not None:
             return self._source_file
-        import importlib.util  # noqa: PLC0415
-
-        spec = importlib.util.find_spec(self._module_path)
-        if spec is None or spec.origin is None:
-            raise ImportError(
-                f"django-aqueduct could not locate source for "
-                f"'{self._module_path}'. Ensure it is on sys.path."
-            )
-        return Path(spec.origin)
+        return resolve_module_source(self._module_path)
 
     def discover(self) -> list[SettingField]:
         """Return one :class:`SettingField` per UPPERCASE module-level assignment."""

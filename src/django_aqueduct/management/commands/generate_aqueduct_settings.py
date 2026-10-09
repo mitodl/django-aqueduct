@@ -25,6 +25,11 @@ Usage examples::
     python manage.py generate_aqueduct_settings \\
         --modules myapp.settings --include-envparser
 
+    # Also declare the settings installed Open edX plugin apps contribute
+    # through their plugin_settings() hooks (read by AST, never imported)
+    python manage.py generate_aqueduct_settings \\
+        --modules lms.envs.common --openedx-plugins lms.djangoapp
+
     # One-time: adopt managed regions in a hand-refined v1-era model, with
     # zero change to its code (comment-only insertion)
     python manage.py generate_aqueduct_settings \\
@@ -180,6 +185,18 @@ class Command(BaseCommand):
             ),
         )
         parser.add_argument(
+            "--openedx-plugins",
+            type=str,
+            choices=["lms.djangoapp", "cms.djangoapp"],
+            default=None,
+            help=(
+                "Include settings contributed by installed Open edX plugin "
+                "apps registered under this entry-point group. Their "
+                "plugin_settings() functions are read by AST, never imported. "
+                "Settings the --modules themselves declare always win."
+            ),
+        )
+        parser.add_argument(
             "--check",
             action="store_true",
             default=False,
@@ -323,6 +340,10 @@ class Command(BaseCommand):
                     f"Static discovery failed for {module_path!r}: {exc}"
                 ) from exc
 
+        openedx_plugins = options.get("openedx_plugins") or cfg.openedx_plugins
+        if openedx_plugins:
+            self._add_openedx_plugin_settings(by_name, str(openedx_plugins))
+
         if include_envparser:
             try:
                 from django_aqueduct.discovery.envparser import (  # noqa: PLC0415
@@ -406,6 +427,33 @@ class Command(BaseCommand):
             self._check(output, output_path, output_format)
         else:
             self._emit(output, output_path, output_format, reset=reset)
+
+    def _add_openedx_plugin_settings(
+        self, by_name: dict[str, SettingField], project_type: str
+    ) -> None:
+        """Merge Open edX plugin-contributed settings into *by_name* in place.
+
+        Uses ``setdefault``: a setting the project's own ``--modules`` already
+        declare keeps the project's declaration, because that is the value the
+        host actually ships. Plugins only *add* names the host never writes.
+
+        Per-plugin problems are surfaced on stderr rather than raised — one
+        malformed plugin must not fail generation for the other fifty.
+        """
+        from django_aqueduct.discovery.openedx_plugins import (  # noqa: PLC0415
+            PluginDiscoveryError,
+            discover_openedx_plugin_settings,
+        )
+
+        try:
+            result = discover_openedx_plugin_settings(project_type)
+        except PluginDiscoveryError as exc:
+            raise CommandError(f"--openedx-plugins: {exc}") from exc
+
+        for warning in result.warnings:
+            self.stderr.write(self.style.WARNING(f"--openedx-plugins: {warning}"))
+        for f in result.fields:
+            by_name.setdefault(f.name, f)
 
     @staticmethod
     def _attribute(
