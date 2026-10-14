@@ -208,6 +208,70 @@ def test_overlay_placeholder_still_binds_from_a_source(monkeypatch):
     assert scope["CONDITIONAL"] == "from-env"
 
 
+def test_placeholder_omitted_with_no_base_at_all():
+    """The no-base path drops placeholders too.
+
+    It has no base to fall back to, so a placeholder injected here *is* the
+    value Django ends up with -- strictly worse than the overlay case, where a
+    base value might still have covered it.
+    """
+    from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
+
+    scope: dict = {}
+    configure_django_settings(_PlaceholderSettings, scope=scope)
+
+    assert "CONDITIONAL" not in scope
+    assert scope["OPTIONAL"] is None
+
+
+def test_placeholder_omitted_when_base_has_no_uppercase_names():
+    """A base that yields no settings takes the no-base path, not the overlay."""
+    from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
+
+    scope: dict = {}
+    configure_django_settings(_PlaceholderSettings, scope=scope, base={"lowercase": 1})
+
+    assert "CONDITIONAL" not in scope
+
+
+def test_programmatic_adapter_omits_placeholders():
+    """configure_django_programmatic goes through the same rule.
+
+    Run in a subprocess: django.conf.settings.configure() is process-global and
+    raises if something already configured it.
+    """
+    code = f"""
+import sys
+sys.path.insert(0, {str(_REPO_ROOT / "src")!r})
+sys.path.insert(0, {str(_REPO_ROOT / "tests")!r})
+from typing import Any
+from pydantic import Field
+from pydantic_settings import BaseSettings
+from django_aqueduct.adapter import UNRESOLVED_MARKER, configure_django_programmatic
+
+class S(BaseSettings):
+    CONDITIONAL: Any = Field(
+        default=None, json_schema_extra={{UNRESOLVED_MARKER: True}}
+    )
+    OPTIONAL: str | None = Field(default=None)
+
+configure_django_programmatic(S)
+from django.conf import settings
+assert not hasattr(settings, "CONDITIONAL"), "placeholder was injected"
+assert settings.OPTIONAL is None
+print("OK")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=str(_REPO_ROOT),
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "OK" in result.stdout
+
+
 def test_overlay_placeholder_defers_to_a_base_that_does_bind_it():
     """When the branch *did* run, the base value is kept, not the placeholder."""
     from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415

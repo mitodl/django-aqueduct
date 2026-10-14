@@ -44,6 +44,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still bind it; that is the whole point of generating a field for a
   plugin-contributed setting, and it is preserved.
 
+  **Consuming projects must regenerate their model.** The fix spans build time
+  and runtime: the marker is written by the renderer into the generated source
+  and read back off the generated field. Bumping to 0.14.2 without re-running
+  `generate_aqueduct_settings` leaves a model with no markers and reproduces
+  the crash exactly, so run the generator and commit the result as part of the
+  upgrade.
+
   The marker records codegen's *strategy*, not the runtime value, so this is
   narrower than the "model wins unless it is `None`" heuristic removed in
   0.10.0: a field that legitimately defaults to `None` is still contributed.

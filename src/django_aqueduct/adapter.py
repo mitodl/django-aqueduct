@@ -57,14 +57,36 @@ def _is_unresolved_placeholder(instance: BaseSettings, key: str) -> bool:
     """Whether *key* is a field whose default stands in for "no value determined".
 
     Reads the marker codegen writes into ``json_schema_extra`` (see
-    :data:`~django_aqueduct.codegen.renderer.UNRESOLVED_MARKER`).  Anything the
-    model does not declare as a field — an ``extra`` value, a name only the base
-    has — is not a placeholder; extras are always in ``model_fields_set`` and so
-    never reach this check.
+    :data:`UNRESOLVED_MARKER`).  Anything the model does not declare as a field
+    — an ``extra`` value, a name only the base has — is not a placeholder;
+    extras are always in ``model_fields_set`` and so never reach this check.
     """
     field = type(instance).model_fields.get(key)
     extra = getattr(field, "json_schema_extra", None)
     return isinstance(extra, dict) and extra.get(UNRESOLVED_MARKER) is True
+
+
+def _carried_values(instance: BaseSettings) -> dict[str, Any]:
+    """``model_dump()`` minus the placeholders nothing supplied a value for.
+
+    A ``DERIVED``/``RUNTIME_ONLY`` field renders ``default=None`` to mean "no
+    value was determined" (see :data:`UNRESOLVED_MARKER`).  Writing that into
+    Django settings turns "this name may not exist" into "this name exists and
+    is ``None``", which are different states to the usual
+    ``getattr(settings, NAME, fallback)`` idiom — a present ``None`` defeats
+    the fallback.  So an unset placeholder contributes nothing at all.
+
+    Every path that turns a model into settings goes through here, not just
+    :func:`_overlay`: the no-base path and
+    :func:`configure_django_programmatic` have no base to fall back to, so a
+    placeholder they inject is *the* value Django ends up with.
+    """
+    return {
+        key: value
+        for key, value in instance.model_dump().items()
+        if key in instance.model_fields_set
+        or not _is_unresolved_placeholder(instance, key)
+    }
 
 
 def _overlay(instance: BaseSettings, base_values: dict[str, Any]) -> dict[str, Any]:
@@ -87,33 +109,22 @@ def _overlay(instance: BaseSettings, base_values: dict[str, Any]) -> dict[str, A
     * **A model-only field contributes its default.**  A field the model
       declares that the base does not carry (a hand-added setting) still lands in
       the result at its default, so nothing the model adds silently vanishes.
-    * **…unless that default is an unresolved placeholder.**  Codegen renders
-      ``DERIVED``/``RUNTIME_ONLY`` fields as ``default=None`` meaning "no value
-      was determined", and marks them (see
-      :data:`~django_aqueduct.codegen.renderer.UNRESOLVED_MARKER`).  When
-      nothing set such a field *and* the base does not bind the name, the name
-      is left **absent** instead of being written as ``None`` — because
-      "missing" and "present and ``None``" are different states to the usual
-      ``getattr(settings, NAME, fallback)`` idiom, and injecting ``None``
-      defeats the fallback.  A conditionally-assigned setting whose branch did
-      not run at runtime is exactly this case.
+    * **…unless that default is an unresolved placeholder**, which
+      :func:`_carried_values` has already dropped, so the base's own handling of
+      the name — carrying it, or not binding it at all — stands.
 
     This replaces the earlier "model wins unless it is ``None``" heuristic, which
     let a non-``None`` snapshot default clobber a live base value.  Note the
-    placeholder rule above is narrower than that heuristic: it consults codegen's
+    placeholder rule is narrower than that heuristic: it consults codegen's
     recorded strategy, not the runtime value, so a field that legitimately
     defaults to ``None`` is still contributed.
     """
-    full = instance.model_dump()
     overridden = instance.model_fields_set
     merged = dict(base_values)
-    for key, value in full.items():
-        if key in overridden:
+    for key, value in _carried_values(instance).items():
+        if key in overridden or key not in base_values:
             merged[key] = value
-        elif key not in base_values and not _is_unresolved_placeholder(instance, key):
-            merged[key] = value
-        # else: field is at its default AND (the base carries it, or the default
-        # is a placeholder standing in for a value nothing supplied) → keep base.
+        # else: field is at its default AND the base carries it → keep base.
     return merged
 
 
@@ -204,7 +215,7 @@ def configure_django_settings(
     if base_values:
         merged = _overlay(instance, base_values)
     else:
-        merged = instance.model_dump()
+        merged = _carried_values(instance)
 
     if post_configure is not None:
         post_configure(merged, instance)
@@ -235,4 +246,4 @@ def configure_django_programmatic(
     from django.conf import settings as django_settings  # noqa: PLC0415
 
     instance = model_class()
-    django_settings.configure(**instance.model_dump())
+    django_settings.configure(**_carried_values(instance))
