@@ -30,8 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   With no Firebase credentials the base never binds
   `PUSH_NOTIFICATIONS_SETTINGS`, so the placeholder `None` was injected, and
   `django-push-notifications`' module-level
-  `PUSH_NOTIFICATIONS_SETTINGS.setdefault(...)` crashed every LMS and CMS boot
-  with `AttributeError: 'NoneType' object has no attribute 'setdefault'`.
+  `PUSH_NOTIFICATIONS_SETTINGS.setdefault(...)` crashed the LMS at
+  `django.setup()` with
+  `AttributeError: 'NoneType' object has no attribute 'setdefault'`, in both
+  deployment groups tested. The CMS model carries the same field, so it is
+  exposed the same way; the observed failures were the LMS, which boots first.
 
   Codegen now marks `DERIVED` and `RUNTIME_ONLY` fields with
   `json_schema_extra={"aqueduct_unresolved": True}`, and
