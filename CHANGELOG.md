@@ -44,6 +44,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still bind it; that is the whole point of generating a field for a
   plugin-contributed setting, and it is preserved.
 
+  The rule applies on every path that turns a model into settings, not only
+  the overlay: `configure_django_settings` with no `base`, and the Option B
+  `configure_django_programmatic`. Those have no base to fall back to, so a
+  placeholder they inject *is* the value Django ends up with. Option B users
+  should note the knock-on: an omitted name now falls through to Django's
+  `global_settings`, so an unset `DERIVED` field like `MEDIA_ROOT` resolves to
+  Django's `''` rather than binding `None` over it.
+
   **Consuming projects must regenerate their model.** The fix spans build time
   and runtime: the marker is written by the renderer into the generated source
   and read back off the generated field. Bumping to 0.14.2 without re-running

@@ -166,7 +166,11 @@ def configure_django_settings(
     See :func:`_overlay` for the full rule.  This supersedes the earlier "model
     wins unless it is ``None``" heuristic, which let a non-``None`` snapshot
     default overwrite a live base value.  When *base* is ``None`` the model
-    fully replaces the scope (unchanged).
+    replaces the scope outright — with the one exception that an unresolved
+    ``DERIVED``/``RUNTIME_ONLY`` placeholder nothing supplied a value for is
+    omitted rather than written as ``None`` (see :func:`_carried_values`).
+    That rule holds on every path, because with no base there is nothing to
+    fall back to and the placeholder would *be* the value Django gets.
 
     A field that a validator *extends from the base* (e.g. appending a plugin's
     app to the base's plugin-complete ``INSTALLED_APPS``) cannot be expressed as
@@ -239,6 +243,13 @@ def configure_django_programmatic(
 
         import django
         django.setup()
+
+    An unresolved ``DERIVED``/``RUNTIME_ONLY`` placeholder nothing supplied a
+    value for is omitted rather than passed as ``None`` (see
+    :func:`_carried_values`).  There is no base here, so the effect is the
+    largest of any path: the name is left for Django's own
+    ``global_settings`` to answer, which is why e.g. an unset ``MEDIA_ROOT``
+    now resolves to Django's ``''`` instead of binding ``None`` over it.
 
     Args:
         model_class: A :class:`pydantic_settings.BaseSettings` subclass.
