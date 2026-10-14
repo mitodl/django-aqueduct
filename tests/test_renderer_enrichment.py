@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 
+from django_aqueduct.adapter import UNRESOLVED_MARKER
 from django_aqueduct.codegen.dict_schema import TypedDictDef, TypedDictField
 from django_aqueduct.codegen.renderer import ModelRenderer
 from django_aqueduct.discovery.ir import (
@@ -162,4 +163,36 @@ def test_runtime_only_default_renders_none_with_comment():
 def test_runtime_only_widens_concrete_type_to_optional():
     f = _field("MYSTERY", base="str", default=Default.runtime_only())
     src = ModelRenderer([f]).render()
-    assert "MYSTERY: str | None = Field(\n        default=None\n    )" in src
+    # The subject is the widened annotation: `default=None` is only valid if the
+    # annotation admits None. Asserted apart from the Field body so that adding
+    # a kwarg (e.g. the unresolved marker) does not masquerade as a regression
+    # in type widening.
+    assert "MYSTERY: str | None = Field(" in src
+    assert "default=None" in src
+
+
+def test_only_unresolved_strategies_carry_the_marker():
+    """The marker distinguishes a placeholder None from a real None default.
+
+    All four strategies below render ``default=None``, so the rendered *value*
+    cannot tell the overlay which names may be left absent. Only DERIVED and
+    RUNTIME_ONLY mean "no value was determined"; REDACTED has a static
+    assignment whose value is merely withheld, and a literal ``None`` is a
+    genuine default.
+    """
+    marked = {
+        name: UNRESOLVED_MARKER
+        in ModelRenderer([_field(name, base="Any", default=default)]).render()
+        for name, default in (
+            ("A_DERIVED", Default.derived()),
+            ("A_RUNTIME_ONLY", Default.runtime_only()),
+            ("A_REDACTED", Default.redacted()),
+            ("A_LITERAL_NONE", Default.literal_(None)),
+        )
+    }
+    assert marked == {
+        "A_DERIVED": True,
+        "A_RUNTIME_ONLY": True,
+        "A_REDACTED": False,
+        "A_LITERAL_NONE": False,
+    }

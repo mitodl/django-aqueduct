@@ -12,6 +12,15 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from types import ModuleType
 
+#: Marks a generated field whose ``default=None`` stands in for "no value was
+#: determined" rather than for the value ``None`` — see :func:`_overlay`.
+#: Written into the field's ``json_schema_extra`` by the renderer, so the signal
+#: travels with the generated file and survives the subclassing every service
+#: does to compose its model.  Defined here, on the runtime side that consumes
+#: it, because it is a contract between generated code and the overlay; codegen
+#: imports it rather than the other way round.
+UNRESOLVED_MARKER = "aqueduct_unresolved"
+
 # The most recently configured model instance, exposed for runtime code and the
 # parity command to reach typed values without re-instantiating (also injected
 # into the settings scope as ``AQUEDUCT_MODEL``).
@@ -44,6 +53,42 @@ def _collect_base_settings(
     return {name: getattr(module, name) for name in dir(module) if name.isupper()}
 
 
+def _is_unresolved_placeholder(instance: BaseSettings, key: str) -> bool:
+    """Whether *key* is a field whose default stands in for "no value determined".
+
+    Reads the marker codegen writes into ``json_schema_extra`` (see
+    :data:`UNRESOLVED_MARKER`).  Anything the model does not declare as a field
+    — an ``extra`` value, a name only the base has — is not a placeholder;
+    extras are always in ``model_fields_set`` and so never reach this check.
+    """
+    field = type(instance).model_fields.get(key)
+    extra = getattr(field, "json_schema_extra", None)
+    return isinstance(extra, dict) and extra.get(UNRESOLVED_MARKER) is True
+
+
+def _carried_values(instance: BaseSettings) -> dict[str, Any]:
+    """``model_dump()`` minus the placeholders nothing supplied a value for.
+
+    A ``DERIVED``/``RUNTIME_ONLY`` field renders ``default=None`` to mean "no
+    value was determined" (see :data:`UNRESOLVED_MARKER`).  Writing that into
+    Django settings turns "this name may not exist" into "this name exists and
+    is ``None``", which are different states to the usual
+    ``getattr(settings, NAME, fallback)`` idiom — a present ``None`` defeats
+    the fallback.  So an unset placeholder contributes nothing at all.
+
+    Every path that turns a model into settings goes through here, not just
+    :func:`_overlay`: the no-base path and
+    :func:`configure_django_programmatic` have no base to fall back to, so a
+    placeholder they inject is *the* value Django ends up with.
+    """
+    return {
+        key: value
+        for key, value in instance.model_dump().items()
+        if key in instance.model_fields_set
+        or not _is_unresolved_placeholder(instance, key)
+    }
+
+
 def _overlay(instance: BaseSettings, base_values: dict[str, Any]) -> dict[str, Any]:
     """Overlay *instance* onto *base_values*, keeping base for un-overridden fields.
 
@@ -64,14 +109,19 @@ def _overlay(instance: BaseSettings, base_values: dict[str, Any]) -> dict[str, A
     * **A model-only field contributes its default.**  A field the model
       declares that the base does not carry (a hand-added setting) still lands in
       the result at its default, so nothing the model adds silently vanishes.
+    * **…unless that default is an unresolved placeholder**, which
+      :func:`_carried_values` has already dropped, so the base's own handling of
+      the name — carrying it, or not binding it at all — stands.
 
     This replaces the earlier "model wins unless it is ``None``" heuristic, which
-    let a non-``None`` snapshot default clobber a live base value.
+    let a non-``None`` snapshot default clobber a live base value.  Note the
+    placeholder rule is narrower than that heuristic: it consults codegen's
+    recorded strategy, not the runtime value, so a field that legitimately
+    defaults to ``None`` is still contributed.
     """
-    full = instance.model_dump()
     overridden = instance.model_fields_set
     merged = dict(base_values)
-    for key, value in full.items():
+    for key, value in _carried_values(instance).items():
         if key in overridden or key not in base_values:
             merged[key] = value
         # else: field is at its default AND the base carries it → keep base.
@@ -116,7 +166,11 @@ def configure_django_settings(
     See :func:`_overlay` for the full rule.  This supersedes the earlier "model
     wins unless it is ``None``" heuristic, which let a non-``None`` snapshot
     default overwrite a live base value.  When *base* is ``None`` the model
-    fully replaces the scope (unchanged).
+    replaces the scope outright — with the one exception that an unresolved
+    ``DERIVED``/``RUNTIME_ONLY`` placeholder nothing supplied a value for is
+    omitted rather than written as ``None`` (see :func:`_carried_values`).
+    That rule holds on every path, because with no base there is nothing to
+    fall back to and the placeholder would *be* the value Django gets.
 
     A field that a validator *extends from the base* (e.g. appending a plugin's
     app to the base's plugin-complete ``INSTALLED_APPS``) cannot be expressed as
@@ -165,7 +219,7 @@ def configure_django_settings(
     if base_values:
         merged = _overlay(instance, base_values)
     else:
-        merged = instance.model_dump()
+        merged = _carried_values(instance)
 
     if post_configure is not None:
         post_configure(merged, instance)
@@ -190,10 +244,17 @@ def configure_django_programmatic(
         import django
         django.setup()
 
+    An unresolved ``DERIVED``/``RUNTIME_ONLY`` placeholder nothing supplied a
+    value for is omitted rather than passed as ``None`` (see
+    :func:`_carried_values`).  There is no base here, so the effect is the
+    largest of any path: the name is left for Django's own
+    ``global_settings`` to answer, which is why e.g. an unset ``MEDIA_ROOT``
+    now resolves to Django's ``''`` instead of binding ``None`` over it.
+
     Args:
         model_class: A :class:`pydantic_settings.BaseSettings` subclass.
     """
     from django.conf import settings as django_settings  # noqa: PLC0415
 
     instance = model_class()
-    django_settings.configure(**instance.model_dump())
+    django_settings.configure(**_carried_values(instance))

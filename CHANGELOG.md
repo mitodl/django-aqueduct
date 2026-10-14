@@ -5,6 +5,83 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.2]
+
+### Fixed
+
+- **`django_aqueduct.__version__` no longer drifts from the released version.**
+  It was a hand-maintained literal with nothing syncing it to
+  `pyproject.toml`, and sat at `"0.13.0"` through both the 0.14.0 and 0.14.1
+  releases — so a consumer gating on "do I have this fix?" read the wrong
+  answer. It is now read from installed package metadata
+  (`importlib.metadata.version`), with a test asserting it matches the
+  declared version.
+
+- **A conditionally-assigned plugin setting is no longer injected as `None`.**
+  A setting a plugin assigns inside a branch is correctly classified `DERIVED`
+  and rendered `default=None` — but that `None` means *"no value was
+  determined"*, not *"the value is `None`"*. The overlay could not tell the two
+  apart, and its "a model-only field contributes its default" rule wrote the
+  placeholder into Django settings whenever the base did not bind the name.
+
+  Turning *"this name may not exist"* into *"this name exists and is `None`"*
+  is not a no-op. The ordinary idiom for an optional Django setting is
+  `getattr(settings, NAME, fallback)`, and a present `None` defeats the
+  fallback. Open edX's `ace_common` is the motivating case:
+
+  ```python
+  settings.FIREBASE_APP = setup_firebase_app(...)   # None without credentials
+  if getattr(settings, 'FIREBASE_APP', None):
+      settings.PUSH_NOTIFICATIONS_SETTINGS = {...}  # branch never runs
+  ```
+
+  With no Firebase credentials the base never binds
+  `PUSH_NOTIFICATIONS_SETTINGS`, so the placeholder `None` was injected, and
+  `django-push-notifications`' module-level
+  `PUSH_NOTIFICATIONS_SETTINGS.setdefault(...)` crashed the LMS at
+  `django.setup()` with
+  `AttributeError: 'NoneType' object has no attribute 'setdefault'`, in both
+  deployment groups tested. The CMS model carries the same field, so it is
+  exposed the same way; the observed failures were the LMS, which boots first.
+
+  Codegen now marks `DERIVED` and `RUNTIME_ONLY` fields with
+  `json_schema_extra={"aqueduct_unresolved": True}`, and
+  `configure_django_settings` **omits** such a field when nothing set it *and*
+  the base does not bind the name — leaving the name absent, exactly as the
+  base left it. The field still exists on the model, so the env source can
+  still bind it; that is the whole point of generating a field for a
+  plugin-contributed setting, and it is preserved.
+
+  The rule applies on every path that turns a model into settings, not only
+  the overlay: `configure_django_settings` with no `base`, and the Option B
+  `configure_django_programmatic`. Those have no base to fall back to, so a
+  placeholder they inject *is* the value Django ends up with. Option B users
+  should note the knock-on: an omitted name now falls through to Django's
+  `global_settings`, so an unset `DERIVED` field like `MEDIA_ROOT` resolves to
+  Django's `''` rather than binding `None` over it.
+
+  **Consuming projects must regenerate their model.** The fix spans build time
+  and runtime: the marker is written by the renderer into the generated source
+  and read back off the generated field. Bumping to 0.14.2 without re-running
+  `generate_aqueduct_settings` leaves a model with no markers and reproduces
+  the crash exactly, so run the generator and commit the result as part of the
+  upgrade.
+
+  The marker records codegen's *strategy*, not the runtime value, so this is
+  narrower than the "model wins unless it is `None`" heuristic removed in
+  0.10.0: a field that legitimately defaults to `None` is still contributed.
+  `REDACTED` is deliberately not marked — there is a static assignment whose
+  value is merely withheld, so the base binds the name, and dropping it would
+  turn an unsupplied secret into an `AttributeError` at some unrelated read
+  site rather than a visible `None`.
+
+  Most affected settings never surfaced this because the base binds them
+  anyway (`TEMPLATES`, `USE_TZ` and friends are assigned unconditionally in
+  `common.py`, so the overlay already deferred). The failure is specific to
+  names whose assignment is skipped at runtime, which plugin `plugin_settings()`
+  hooks do far more often than a project's own `common.py` — which is why this
+  only became visible with `--openedx-plugins` in 0.14.0.
+
 ## [0.14.1]
 
 ### Fixed
