@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`django_aqueduct.__version__` no longer drifts from the released version.**
+  It was a hand-maintained literal with nothing syncing it to
+  `pyproject.toml`, and sat at `"0.13.0"` through both the 0.14.0 and 0.14.1
+  releases — so a consumer gating on "do I have this fix?" read the wrong
+  answer. It is now read from installed package metadata
+  (`importlib.metadata.version`), with a test asserting it matches the
+  declared version.
+
 - **A conditionally-assigned plugin setting is no longer injected as `None`.**
   A setting a plugin assigns inside a branch is correctly classified `DERIVED`
   and rendered `default=None` — but that `None` means *"no value was
