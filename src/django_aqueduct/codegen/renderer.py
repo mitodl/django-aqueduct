@@ -38,6 +38,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from django_aqueduct.adapter import UNRESOLVED_MARKER
 from django_aqueduct.discovery.ir import (
     DefaultStrategy,
     ImportSpec,
@@ -314,6 +315,21 @@ def _wrap_call(
     return f"{head}(\n{body}\n{indent}){trailer}"
 
 
+#: Strategies whose rendered ``default=None`` means "no value was determined",
+#: not "the value is ``None``".  The distinction matters to the overlay: a name
+#: the base never binds must stay *absent* rather than arriving as ``None``,
+#: because the ordinary idiom for an optional Django setting is
+#: ``getattr(settings, NAME, fallback)``, which a present ``None`` defeats.
+#:
+#: ``REDACTED`` is deliberately absent.  There *is* a static assignment — only
+#: its value is withheld — so the base binds the name and the overlay defers to
+#: it.  Dropping it instead would turn an unsupplied secret into an
+#: ``AttributeError`` at some unrelated read site rather than a visible ``None``.
+_UNRESOLVED_STRATEGIES = frozenset(
+    {DefaultStrategy.DERIVED, DefaultStrategy.RUNTIME_ONLY}
+)
+
+
 def _render_default_expr(f: SettingField) -> tuple[str, str]:
     """Return ``(field_default_kwarg, trailing_comment)`` for a field's default."""
     d = f.default
@@ -408,6 +424,8 @@ def _render_field(
         annotation = f"Annotated[{annotation}, NoDecode]"
 
     parts = [default_kwarg]
+    if f.default.strategy in _UNRESOLVED_STRATEGIES:
+        parts.append(f'json_schema_extra={{"{UNRESOLVED_MARKER}": True}}')
     if f.env_aliases:
         choices = ", ".join(render_str_literal(a) for a in f.env_aliases)
         parts.append(f"validation_alias=AliasChoices({choices})")

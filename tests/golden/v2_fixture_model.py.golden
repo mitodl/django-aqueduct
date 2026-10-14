@@ -36,7 +36,7 @@ class AqueductSettings(BaseSettings):
     ALT_PRICE: Any = Field(default_factory=lambda: Dec("1.50"))  # refine type
     APP_BASE_URL: str = Field(..., validation_alias=AliasChoices("APP_BASE_URL"))
     CACHE_BACKEND: Any = Field(
-        default=None
+        default=None, json_schema_extra={"aqueduct_unresolved": True}
     )  # DERIVED: reproduce in a @model_validator (conditional/computed value)
     CORS_ALLOWED_ORIGINS: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
@@ -47,7 +47,7 @@ class AqueductSettings(BaseSettings):
     DEBUG: bool = Field(default=False)
     DEFAULT_PRICE: decimal.Decimal = Field(default_factory=lambda: Decimal("9.99"))
     DERIVED_URL: Any = Field(
-        default=None
+        default=None, json_schema_extra={"aqueduct_unresolved": True}
     )  # DERIVED: reproduce in a @model_validator (conditional/computed value)
     EXTRA_HOST: str | None = Field(
         default=None,

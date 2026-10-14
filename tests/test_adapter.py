@@ -5,8 +5,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
+
+from django_aqueduct.adapter import UNRESOLVED_MARKER
 
 # Repo root — works both locally and in CI where cwd is the checkout directory
 _REPO_ROOT = Path(__file__).parent.parent
@@ -153,6 +155,68 @@ def test_overlay_model_only_field_contributes_default():
 
     # EXTRA is model-only → its default is contributed, not dropped.
     assert scope["EXTRA"] == "from-model"
+
+
+class _PlaceholderSettings(BaseSettings):
+    """A generated model carrying both kinds of ``default=None``.
+
+    ``CONDITIONAL`` is what codegen emits for a setting assigned inside a
+    branch (``DERIVED``): the ``None`` is a placeholder for "no value was
+    determined".  ``OPTIONAL`` is an ordinary literal ``None`` default.  They
+    render almost identically, which is why the marker — not the value — is
+    what the overlay consults.
+    """
+
+    CONDITIONAL: Any = Field(default=None, json_schema_extra={UNRESOLVED_MARKER: True})
+    OPTIONAL: str | None = Field(default=None)
+
+
+def test_overlay_omits_unresolved_placeholder_the_base_does_not_bind():
+    """An unset placeholder field stays absent rather than arriving as None.
+
+    Regression test for the Open edX ``ace_common`` crash: that plugin assigns
+    ``PUSH_NOTIFICATIONS_SETTINGS`` only inside ``if settings.FIREBASE_APP:``,
+    so with no credentials the base never binds the name.  Writing the
+    placeholder ``None`` there defeated ``django-push-notifications``'
+    ``getattr(settings, NAME, {})`` fallback and crashed on ``.setdefault``.
+    """
+    from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
+
+    scope: dict = {}
+    configure_django_settings(_PlaceholderSettings, scope=scope, base={"DEBUG": False})
+
+    assert "CONDITIONAL" not in scope
+    # Not a blanket "drop None": an ordinary None default is still contributed,
+    # so a model-only optional setting does not silently vanish.
+    assert "OPTIONAL" in scope
+    assert scope["OPTIONAL"] is None
+
+
+def test_overlay_placeholder_still_binds_from_a_source(monkeypatch):
+    """Omission applies only when nothing supplied a value.
+
+    The field must keep existing, because declaring it is what lets the env
+    source bind it at all — that is the entire point of generating a field for
+    a plugin-contributed setting.
+    """
+    from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
+
+    monkeypatch.setenv("CONDITIONAL", "from-env")
+    scope: dict = {}
+    configure_django_settings(_PlaceholderSettings, scope=scope, base={"DEBUG": False})
+
+    assert scope["CONDITIONAL"] == "from-env"
+
+
+def test_overlay_placeholder_defers_to_a_base_that_does_bind_it():
+    """When the branch *did* run, the base value is kept, not the placeholder."""
+    from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
+
+    base = {"CONDITIONAL": {"APP": "configured"}}
+    scope: dict = {}
+    configure_django_settings(_PlaceholderSettings, scope=scope, base=base)
+
+    assert scope["CONDITIONAL"] == {"APP": "configured"}
 
 
 class _DerivedSettings(BaseSettings):

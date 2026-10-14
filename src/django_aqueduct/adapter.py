@@ -12,6 +12,15 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from types import ModuleType
 
+#: Marks a generated field whose ``default=None`` stands in for "no value was
+#: determined" rather than for the value ``None`` — see :func:`_overlay`.
+#: Written into the field's ``json_schema_extra`` by the renderer, so the signal
+#: travels with the generated file and survives the subclassing every service
+#: does to compose its model.  Defined here, on the runtime side that consumes
+#: it, because it is a contract between generated code and the overlay; codegen
+#: imports it rather than the other way round.
+UNRESOLVED_MARKER = "aqueduct_unresolved"
+
 # The most recently configured model instance, exposed for runtime code and the
 # parity command to reach typed values without re-instantiating (also injected
 # into the settings scope as ``AQUEDUCT_MODEL``).
@@ -44,6 +53,20 @@ def _collect_base_settings(
     return {name: getattr(module, name) for name in dir(module) if name.isupper()}
 
 
+def _is_unresolved_placeholder(instance: BaseSettings, key: str) -> bool:
+    """Whether *key* is a field whose default stands in for "no value determined".
+
+    Reads the marker codegen writes into ``json_schema_extra`` (see
+    :data:`~django_aqueduct.codegen.renderer.UNRESOLVED_MARKER`).  Anything the
+    model does not declare as a field — an ``extra`` value, a name only the base
+    has — is not a placeholder; extras are always in ``model_fields_set`` and so
+    never reach this check.
+    """
+    field = type(instance).model_fields.get(key)
+    extra = getattr(field, "json_schema_extra", None)
+    return isinstance(extra, dict) and extra.get(UNRESOLVED_MARKER) is True
+
+
 def _overlay(instance: BaseSettings, base_values: dict[str, Any]) -> dict[str, Any]:
     """Overlay *instance* onto *base_values*, keeping base for un-overridden fields.
 
@@ -64,17 +87,33 @@ def _overlay(instance: BaseSettings, base_values: dict[str, Any]) -> dict[str, A
     * **A model-only field contributes its default.**  A field the model
       declares that the base does not carry (a hand-added setting) still lands in
       the result at its default, so nothing the model adds silently vanishes.
+    * **…unless that default is an unresolved placeholder.**  Codegen renders
+      ``DERIVED``/``RUNTIME_ONLY`` fields as ``default=None`` meaning "no value
+      was determined", and marks them (see
+      :data:`~django_aqueduct.codegen.renderer.UNRESOLVED_MARKER`).  When
+      nothing set such a field *and* the base does not bind the name, the name
+      is left **absent** instead of being written as ``None`` — because
+      "missing" and "present and ``None``" are different states to the usual
+      ``getattr(settings, NAME, fallback)`` idiom, and injecting ``None``
+      defeats the fallback.  A conditionally-assigned setting whose branch did
+      not run at runtime is exactly this case.
 
     This replaces the earlier "model wins unless it is ``None``" heuristic, which
-    let a non-``None`` snapshot default clobber a live base value.
+    let a non-``None`` snapshot default clobber a live base value.  Note the
+    placeholder rule above is narrower than that heuristic: it consults codegen's
+    recorded strategy, not the runtime value, so a field that legitimately
+    defaults to ``None`` is still contributed.
     """
     full = instance.model_dump()
     overridden = instance.model_fields_set
     merged = dict(base_values)
     for key, value in full.items():
-        if key in overridden or key not in base_values:
+        if key in overridden:
             merged[key] = value
-        # else: field is at its default AND the base carries it → keep base.
+        elif key not in base_values and not _is_unresolved_placeholder(instance, key):
+            merged[key] = value
+        # else: field is at its default AND (the base carries it, or the default
+        # is a placeholder standing in for a value nothing supplied) → keep base.
     return merged
 
 

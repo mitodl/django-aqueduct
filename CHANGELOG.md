@@ -5,6 +5,57 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.2]
+
+### Fixed
+
+- **A conditionally-assigned plugin setting is no longer injected as `None`.**
+  A setting a plugin assigns inside a branch is correctly classified `DERIVED`
+  and rendered `default=None` — but that `None` means *"no value was
+  determined"*, not *"the value is `None`"*. The overlay could not tell the two
+  apart, and its "a model-only field contributes its default" rule wrote the
+  placeholder into Django settings whenever the base did not bind the name.
+
+  Turning *"this name may not exist"* into *"this name exists and is `None`"*
+  is not a no-op. The ordinary idiom for an optional Django setting is
+  `getattr(settings, NAME, fallback)`, and a present `None` defeats the
+  fallback. Open edX's `ace_common` is the motivating case:
+
+  ```python
+  settings.FIREBASE_APP = setup_firebase_app(...)   # None without credentials
+  if getattr(settings, 'FIREBASE_APP', None):
+      settings.PUSH_NOTIFICATIONS_SETTINGS = {...}  # branch never runs
+  ```
+
+  With no Firebase credentials the base never binds
+  `PUSH_NOTIFICATIONS_SETTINGS`, so the placeholder `None` was injected, and
+  `django-push-notifications`' module-level
+  `PUSH_NOTIFICATIONS_SETTINGS.setdefault(...)` crashed every LMS and CMS boot
+  with `AttributeError: 'NoneType' object has no attribute 'setdefault'`.
+
+  Codegen now marks `DERIVED` and `RUNTIME_ONLY` fields with
+  `json_schema_extra={"aqueduct_unresolved": True}`, and
+  `configure_django_settings` **omits** such a field when nothing set it *and*
+  the base does not bind the name — leaving the name absent, exactly as the
+  base left it. The field still exists on the model, so the env source can
+  still bind it; that is the whole point of generating a field for a
+  plugin-contributed setting, and it is preserved.
+
+  The marker records codegen's *strategy*, not the runtime value, so this is
+  narrower than the "model wins unless it is `None`" heuristic removed in
+  0.10.0: a field that legitimately defaults to `None` is still contributed.
+  `REDACTED` is deliberately not marked — there is a static assignment whose
+  value is merely withheld, so the base binds the name, and dropping it would
+  turn an unsupplied secret into an `AttributeError` at some unrelated read
+  site rather than a visible `None`.
+
+  Most affected settings never surfaced this because the base binds them
+  anyway (`TEMPLATES`, `USE_TZ` and friends are assigned unconditionally in
+  `common.py`, so the overlay already deferred). The failure is specific to
+  names whose assignment is skipped at runtime, which plugin `plugin_settings()`
+  hooks do far more often than a project's own `common.py` — which is why this
+  only became visible with `--openedx-plugins` in 0.14.0.
+
 ## [0.14.1]
 
 ### Fixed
