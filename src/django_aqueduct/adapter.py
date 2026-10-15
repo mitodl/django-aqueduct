@@ -38,7 +38,21 @@ _configured_model: BaseSettings | None = None
 
 
 def get_configured_model() -> BaseSettings | None:
-    """Return the model instance from the last ``configure_django_settings`` call."""
+    """Return the model instance from the last ``configure_django_settings`` call.
+
+    This is the *model*, not the settings that were injected from it, and the
+    two deliberately differ for a field whose default was withheld — an
+    unresolved placeholder, or a plugin this install does not have.  The model
+    still carries the generated default; Django does not.  So for a plugin
+    setting on a deployment lacking that plugin::
+
+        getattr(settings, "MITX_REDIRECT_ENABLED", False)   # False
+        get_configured_model().MITX_REDIRECT_ENABLED        # True
+
+    Read effective configuration off ``settings``.  Reach for the model when
+    you want the typed object itself — its parsed types, its field metadata,
+    or ``model_fields_set`` to ask what a source actually supplied.
+    """
     return _configured_model
 
 

@@ -267,10 +267,18 @@ class Provenance:
             branch (so a single snapshot would freeze one branch).
         runtime_only: ``True`` when the name exists at runtime but has no
             static assignment — a human should review it.
+        plugin_distribution: For ``OPENEDX_PLUGIN`` fields, the distribution
+            whose ``plugin_settings()`` hook supplies the default. Recorded
+            here rather than read back off :attr:`SettingField.owning_package`
+            because attribution overwrites that in place (usually with
+            ``"project"``), which would make the rendered marker name a
+            distribution that is never installed — withholding the default on
+            every deployment, including the ones that have the plugin.
     """
 
     source_module: str = ""
     method: DiscoveryMethod = DiscoveryMethod.STATIC
+    plugin_distribution: str = ""
     lineno: int | None = None
     conditional: bool = False
     runtime_only: bool = False

@@ -40,7 +40,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Attribution alone does not mark a field: `owning_package` is populated for
   project settings too, and only a default that came from a `plugin_settings()`
-  hook is withheld when its supplier is missing.
+  hook is withheld when its supplier is missing. The distribution is recorded
+  on the field's `Provenance` rather than read back off `owning_package`,
+  which `--attribute-packages` rewrites in place.
+
+  Two consequences worth knowing. `check_aqueduct_settings` now compares what
+  the adapter would inject rather than the raw `model_dump()`, so a withheld
+  default is no longer reported as `missing_in_legacy` (this also fixes the
+  same false divergence for 0.14.2's unresolved placeholders). And
+  `get_configured_model()` returns the *model*, which still carries the
+  generated default — so `settings.X` and `get_configured_model().X`
+  deliberately differ for a withheld field; read effective configuration off
+  `settings`.
 
 ## [0.14.2]
 

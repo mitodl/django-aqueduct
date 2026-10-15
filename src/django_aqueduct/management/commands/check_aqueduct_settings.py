@@ -111,7 +111,14 @@ class Command(BaseCommand):
             instance = model_cls()
         except Exception as exc:  # noqa: BLE001
             raise CommandError(f"Could not instantiate {model_ref}: {exc}") from exc
-        return dict(instance.model_dump())
+        # What the adapter would actually inject, not the raw dump: a field
+        # whose default is withheld (an unresolved placeholder, or a plugin
+        # this install does not have) never reaches Django, so counting it as
+        # "missing in legacy" reports a divergence that does not exist -- and
+        # fails the command on exactly the deployments those rules target.
+        from django_aqueduct.adapter import _carried_values  # noqa: PLC0415
+
+        return dict(_carried_values(instance))
 
     @staticmethod
     def _import(module_path: str) -> Any:

@@ -204,7 +204,11 @@ def _plugin_field(name, package, **kwargs):
         name=name,
         type=TypeRef("Any"),
         default=kwargs.pop("default", Default.literal_(True)),
-        provenance=Provenance(source_module="m", method=DiscoveryMethod.OPENEDX_PLUGIN),
+        provenance=Provenance(
+            source_module="m",
+            method=DiscoveryMethod.OPENEDX_PLUGIN,
+            plugin_distribution=package,
+        ),
         owning_package=package,
         **kwargs,
     )
@@ -242,3 +246,21 @@ def test_a_derived_plugin_field_carries_both_markers_in_one_dict():
     assert PLUGIN_MARKER in src
     assert UNRESOLVED_MARKER in src
     ast.parse(src)
+
+
+def test_marker_survives_package_attribution():
+    """The marker must not be read off a field attribution rewrites.
+
+    `--attribute-packages` reassigns every field's ``owning_package`` in
+    place, usually to the sentinel ``"project"`` for a plugin setting no rule
+    matches. Sourcing the marker from there would name a distribution that can
+    never be installed, so the adapter would withhold the default on *every*
+    deployment -- including the ones that do install the plugin. A silent
+    false negative is the worst failure mode this feature has.
+    """
+    f = _plugin_field("MITX_REDIRECT_ENABLED", "openedx-companion-auth")
+    f.owning_package = "project"  # what attribution does to it
+
+    src = ModelRenderer([f]).render()
+    assert f'json_schema_extra={{"{PLUGIN_MARKER}": "openedx-companion-auth"}}' in src
+    assert '"project"' not in src

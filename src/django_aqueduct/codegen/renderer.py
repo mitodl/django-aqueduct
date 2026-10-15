@@ -41,7 +41,6 @@ from typing import TYPE_CHECKING
 from django_aqueduct.adapter import PLUGIN_MARKER, UNRESOLVED_MARKER
 from django_aqueduct.discovery.ir import (
     DefaultStrategy,
-    DiscoveryMethod,
     ImportSpec,
     SettingField,
     render_str_literal,
@@ -433,12 +432,18 @@ def _render_field(
     extra: dict[str, object] = {}
     if f.default.strategy in _UNRESOLVED_STRATEGIES:
         extra[UNRESOLVED_MARKER] = True
-    if f.provenance.method is DiscoveryMethod.OPENEDX_PLUGIN and f.owning_package:
+    if f.provenance.plugin_distribution:
         # Records *whose* default this is, so the adapter can decline to apply
         # it on an installation that does not have the plugin.  One generated
         # model serves several deployments in these projects, and they do not
         # install the same plugin set.
-        extra[PLUGIN_MARKER] = f.owning_package
+        #
+        # Read off the provenance, never ``owning_package``: attribution
+        # rewrites that in place, so the marker would name whatever the
+        # attributor decided (``"project"`` for an unmatched name) and the
+        # default would then be withheld everywhere, including where the
+        # plugin *is* installed.
+        extra[PLUGIN_MARKER] = f.provenance.plugin_distribution
     if extra:
         # String values go through render_str_literal, not repr: repr emits
         # single quotes while the keys are double-quoted, and a mixed pair
