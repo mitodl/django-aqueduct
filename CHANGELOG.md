@@ -47,11 +47,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Two consequences worth knowing. `check_aqueduct_settings` now compares what
   the adapter would inject rather than the raw `model_dump()`, so a withheld
   default is no longer reported as `missing_in_legacy` (this also fixes the
-  same false divergence for 0.14.2's unresolved placeholders). And
-  `get_configured_model()` returns the *model*, which still carries the
-  generated default — so `settings.X` and `get_configured_model().X`
-  deliberately differ for a withheld field; read effective configuration off
-  `settings`.
+  same false divergence for 0.14.2's unresolved placeholders). A withheld
+  field is dropped from *both* sides of that comparison rather than from the
+  model's alone — the adapter leaves such a setting to the base, so where the
+  base binds it the two agree, and filtering only the model would have traded
+  a false `missing_in_legacy` for a false `missing_in_model`. `compare()`
+  takes the names as a new `withheld=` keyword and reports them as
+  "not compared"; a setting the model never declared at all is still a real
+  `missing_in_model`. And `get_configured_model()` returns the *model*, which
+  still carries the generated default — so `settings.X` and
+  `get_configured_model().X` deliberately differ for a withheld field; read
+  effective configuration off `settings`.
 
 ## [0.14.2]
 

@@ -39,6 +39,36 @@ def test_ignore_list() -> None:
     assert report.ignored == ["A"]
 
 
+def test_withheld_bound_in_legacy_is_not_a_divergence() -> None:
+    # The model declares A but supplies no value, so the adapter leaves it to
+    # the base. The base binds it -- that is parity, not a missing field.
+    report = compare({}, {"A": "from the base"}, withheld={"A"})
+    assert report.in_sync is True
+    assert report.withheld == ["A"]
+
+
+def test_withheld_absent_from_legacy_is_not_a_divergence() -> None:
+    report = compare({}, {}, withheld={"A"})
+    assert report.in_sync is True
+    assert report.withheld == ["A"]
+
+
+def test_undeclared_legacy_setting_is_still_missing_in_model() -> None:
+    # Withholding must not become a blanket excuse: a legacy setting the model
+    # never declared at all is the drift this command exists to catch.
+    report = compare({}, {"A": 1, "UNDECLARED": 2}, withheld={"A"})
+    assert [(d.name, d.kind) for d in report.divergences] == [
+        ("UNDECLARED", "missing_in_model")
+    ]
+
+
+def test_withheld_is_reported_in_the_rendered_output() -> None:
+    assert "Not compared: 1 key(s)" in compare({}, {}, withheld={"A"}).render()
+    assert (
+        "Not compared: 1 key(s)" in compare({"B": 1}, {"B": 2}, withheld={"A"}).render()
+    )
+
+
 def test_render_in_sync_and_diverged() -> None:
     assert "in parity" in compare({"A": 1}, {"A": 1}).render()
     assert "value differs" in compare({"A": 1}, {"A": 2}).render()
@@ -63,7 +93,23 @@ def test_command_passes_with_ignore(capsys: pytest.CaptureFixture[str]) -> None:
         legacy="parity_legacy",
         ignore="ONLY_IN_MODEL,ONLY_IN_LEGACY",
     )
-    assert "in parity" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "in parity" in out
+    # parity_model declares two withheld fields -- one the legacy module binds
+    # (to a different value) and one it does not. Neither may be reported.
+    assert "WITHHELD_BOUND_IN_LEGACY" in out
+    assert "WITHHELD_ABSENT_FROM_LEGACY" in out
+
+
+def test_command_does_not_flag_withheld_fields_as_missing() -> None:
+    # The drift this fixture pair carries is ONLY_IN_MODEL/ONLY_IN_LEGACY and
+    # nothing else; a withheld field must never add to it.
+    with pytest.raises(CommandError, match="2 setting"):
+        call_command(
+            "check_aqueduct_settings",
+            model="parity_model:AqueductSettings",
+            legacy="parity_legacy",
+        )
 
 
 def test_command_requires_model_and_legacy() -> None:
