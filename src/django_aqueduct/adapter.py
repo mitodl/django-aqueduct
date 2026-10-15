@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import importlib
 import inspect
+from functools import cache
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as metadata_version
 from typing import TYPE_CHECKING, Any
 
 from pydantic_settings import BaseSettings
@@ -20,6 +23,13 @@ if TYPE_CHECKING:
 #: it, because it is a contract between generated code and the overlay; codegen
 #: imports it rather than the other way round.
 UNRESOLVED_MARKER = "aqueduct_unresolved"
+
+#: Marks a generated field whose default comes from an Open edX plugin's
+#: ``plugin_settings()`` hook, carrying the distribution that supplies it — see
+#: :func:`_plugin_is_installed`.  One generated model commonly serves several
+#: deployments that do not install the same plugins, so a plugin's default must
+#: only apply where that plugin is actually present.
+PLUGIN_MARKER = "aqueduct_plugin"
 
 # The most recently configured model instance, exposed for runtime code and the
 # parity command to reach typed values without re-instantiating (also injected
@@ -66,6 +76,41 @@ def _is_unresolved_placeholder(instance: BaseSettings, key: str) -> bool:
     return isinstance(extra, dict) and extra.get(UNRESOLVED_MARKER) is True
 
 
+@cache
+def _plugin_is_installed(distribution: str) -> bool:
+    """Whether *distribution* is installed in this environment.
+
+    Asked of the distribution rather than the entry-point groups so the answer
+    does not depend on which service (``lms`` / ``cms``) is booting: a plugin
+    the deployment installs contributes its default to both, and one it does
+    not install contributes to neither.
+
+    Cached because the overlay asks once per plugin field — tens to hundreds on
+    an Open edX model — and the answer cannot change inside a process.
+    """
+    try:
+        metadata_version(distribution)
+    except PackageNotFoundError:
+        return False
+    return True
+
+
+def _plugin_default_does_not_apply(instance: BaseSettings, key: str) -> bool:
+    """Whether *key*'s default belongs to a plugin this install does not have.
+
+    The field stays on the model either way — declaring it is what lets a
+    settings source bind it — but an absent plugin's *default* is not this
+    deployment's answer, and writing it would state that a plugin which is not
+    installed is configured a particular way.
+    """
+    field = type(instance).model_fields.get(key)
+    extra = getattr(field, "json_schema_extra", None)
+    if not isinstance(extra, dict):
+        return False
+    distribution = extra.get(PLUGIN_MARKER)
+    return isinstance(distribution, str) and not _plugin_is_installed(distribution)
+
+
 def _carried_values(instance: BaseSettings) -> dict[str, Any]:
     """``model_dump()`` minus the placeholders nothing supplied a value for.
 
@@ -76,6 +121,16 @@ def _carried_values(instance: BaseSettings) -> dict[str, Any]:
     ``getattr(settings, NAME, fallback)`` idiom — a present ``None`` defeats
     the fallback.  So an unset placeholder contributes nothing at all.
 
+    A plugin-contributed default is dropped on the same terms when the plugin
+    is not installed (see :func:`_plugin_default_does_not_apply`).  One
+    generated model routinely serves several deployments with different plugin
+    sets, so a default is only this deployment's answer when it has the plugin
+    that supplies it.
+
+    Both rules apply only to a field *nothing set*: anything a source or a
+    validator provided is in ``model_fields_set`` and is carried regardless,
+    because that is a deliberate value rather than a generated guess.
+
     Every path that turns a model into settings goes through here, not just
     :func:`_overlay`: the no-base path and
     :func:`configure_django_programmatic` have no base to fall back to, so a
@@ -85,7 +140,10 @@ def _carried_values(instance: BaseSettings) -> dict[str, Any]:
         key: value
         for key, value in instance.model_dump().items()
         if key in instance.model_fields_set
-        or not _is_unresolved_placeholder(instance, key)
+        or not (
+            _is_unresolved_placeholder(instance, key)
+            or _plugin_default_does_not_apply(instance, key)
+        )
     }
 
 

@@ -38,9 +38,10 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from django_aqueduct.adapter import UNRESOLVED_MARKER
+from django_aqueduct.adapter import PLUGIN_MARKER, UNRESOLVED_MARKER
 from django_aqueduct.discovery.ir import (
     DefaultStrategy,
+    DiscoveryMethod,
     ImportSpec,
     SettingField,
     render_str_literal,
@@ -330,6 +331,11 @@ _UNRESOLVED_STRATEGIES = frozenset(
 )
 
 
+def _render_extra_value(value: object) -> str:
+    """Render one ``json_schema_extra`` value as source text."""
+    return render_str_literal(value) if isinstance(value, str) else repr(value)
+
+
 def _render_default_expr(f: SettingField) -> tuple[str, str]:
     """Return ``(field_default_kwarg, trailing_comment)`` for a field's default."""
     d = f.default
@@ -424,8 +430,26 @@ def _render_field(
         annotation = f"Annotated[{annotation}, NoDecode]"
 
     parts = [default_kwarg]
+    extra: dict[str, object] = {}
     if f.default.strategy in _UNRESOLVED_STRATEGIES:
-        parts.append(f'json_schema_extra={{"{UNRESOLVED_MARKER}": True}}')
+        extra[UNRESOLVED_MARKER] = True
+    if f.provenance.method is DiscoveryMethod.OPENEDX_PLUGIN and f.owning_package:
+        # Records *whose* default this is, so the adapter can decline to apply
+        # it on an installation that does not have the plugin.  One generated
+        # model serves several deployments in these projects, and they do not
+        # install the same plugin set.
+        extra[PLUGIN_MARKER] = f.owning_package
+    if extra:
+        # String values go through render_str_literal, not repr: repr emits
+        # single quotes while the keys are double-quoted, and a mixed pair
+        # would land on one line of a generated file. Built outside the
+        # f-string because an `!r` conversion there applies to the whole
+        # conditional, re-quoting the already-quoted literal.
+        rendered = ", ".join(
+            f"{render_str_literal(k)}: {_render_extra_value(v)}"
+            for k, v in extra.items()
+        )
+        parts.append(f"json_schema_extra={{{rendered}}}")
     if f.env_aliases:
         choices = ", ".join(render_str_literal(a) for a in f.env_aliases)
         parts.append(f"validation_alias=AliasChoices({choices})")

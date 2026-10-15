@@ -5,6 +5,43 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0]
+
+### Added
+
+- **A plugin's default is only applied where that plugin is installed.**
+  Generated plugin fields now carry the distribution that supplies them, and
+  `configure_django_settings` withholds the default when that distribution is
+  absent:
+
+  ```python
+  MITX_REDIRECT_ENABLED: bool = Field(
+      default=True,
+      json_schema_extra={"aqueduct_plugin": "openedx-companion-auth"},
+  )
+  ```
+
+  One generated model routinely serves several deployments that do not install
+  the same plugins — in MIT OL's case, seven cells across five distinct package
+  sets sharing one settings tree. Before this, every one of them was handed
+  `MITX_REDIRECT_ENABLED = True`, including the deployments with no redirect
+  middleware installed. A plugin default is a `LITERAL`, so 0.14.2's
+  unresolved-placeholder rule did not touch it, and the base never binds the
+  name on a deployment without the plugin, so the overlay's model-only branch
+  wrote it in.
+
+  The field itself still exists, so a settings source can still bind it — an
+  operator who sets the variable has stated an intent that an absent plugin
+  does not override. Only the generated *default* is withheld, and only when
+  nothing else supplied a value. Presence is asked of the distribution rather
+  than the `lms.djangoapp` / `cms.djangoapp` entry-point groups, so the answer
+  does not depend on which service is booting, and it is cached for the
+  process.
+
+  Attribution alone does not mark a field: `owning_package` is populated for
+  project settings too, and only a default that came from a `plugin_settings()`
+  hook is withheld when its supplier is missing.
+
 ## [0.14.2]
 
 ### Fixed
