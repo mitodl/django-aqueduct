@@ -263,15 +263,23 @@ _LITERAL_KWARG_PREFIXES = ("default_factory=lambda: ", "default=")
 _EMPTY_FACTORY_BUILTINS: dict[type, str] = {list: "list", dict: "dict", set: "set"}
 
 
-def _reflow_long_literal_kwarg(rendered: str, literal: object) -> str:
-    """Re-explode an overlong ``default=``/``default_factory=lambda: `` line.
+def _reflow_long_literal_kwarg(
+    rendered: str,
+    literal: object,
+    prefixes: tuple[str, ...] = _LITERAL_KWARG_PREFIXES,
+) -> str:
+    """Re-explode an overlong collection-valued keyword argument's line.
 
     :func:`_wrap_call` only explodes at the level of ``Field(...)``'s own
     arguments; a single argument that is itself a large list/dict literal
-    (e.g. a real ``DATABASES`` default) can still overflow on its own line.
-    Reaching back into the source ``literal`` value (rather than re-parsing
-    rendered text) lets us recursively explode just that one line with
+    (e.g. a real ``DATABASES`` default, or a ``json_schema_extra`` carrying
+    both markers) can still overflow on its own line. Reaching back into the
+    source ``literal`` value (rather than re-parsing rendered text) lets us
+    recursively explode just that one line with
     :func:`_render_collection_wrapped`, matching what ``ruff format`` would do.
+
+    *prefixes* names the keyword(s) whose line this call is responsible for, so
+    each caller re-wraps only the argument it holds the source value for.
     """
     lines = rendered.split("\n")
     for i, line in enumerate(lines):
@@ -279,9 +287,7 @@ def _reflow_long_literal_kwarg(rendered: str, literal: object) -> str:
             continue
         stripped = line.lstrip(" ")
         indent = line[: len(line) - len(stripped)]
-        prefix = next(
-            (p for p in _LITERAL_KWARG_PREFIXES if stripped.startswith(p)), None
-        )
+        prefix = next((p for p in prefixes if stripped.startswith(p)), None)
         if prefix is None:
             continue
         trail = "," if stripped.endswith(",") else ""
@@ -328,11 +334,6 @@ def _wrap_call(
 _UNRESOLVED_STRATEGIES = frozenset(
     {DefaultStrategy.DERIVED, DefaultStrategy.RUNTIME_ONLY}
 )
-
-
-def _render_extra_value(value: object) -> str:
-    """Render one ``json_schema_extra`` value as source text."""
-    return render_str_literal(value) if isinstance(value, str) else repr(value)
 
 
 def _render_default_expr(f: SettingField) -> tuple[str, str]:
@@ -445,16 +446,11 @@ def _render_field(
         # plugin *is* installed.
         extra[PLUGIN_MARKER] = f.provenance.plugin_distribution
     if extra:
-        # String values go through render_str_literal, not repr: repr emits
-        # single quotes while the keys are double-quoted, and a mixed pair
-        # would land on one line of a generated file. Built outside the
-        # f-string because an `!r` conversion there applies to the whole
-        # conditional, re-quoting the already-quoted literal.
-        rendered = ", ".join(
-            f"{render_str_literal(k)}: {_render_extra_value(v)}"
-            for k, v in extra.items()
-        )
-        parts.append(f"json_schema_extra={{{rendered}}}")
+        # _render_literal, not repr: repr emits single quotes while the keys
+        # are double-quoted, and a mixed pair would land in a generated file.
+        # Rendered flat here; the reflow below explodes it if the line it ends
+        # up on overflows.
+        parts.append(f"json_schema_extra={_render_literal(extra)}")
     if f.env_aliases:
         choices = ", ".join(render_str_literal(a) for a in f.env_aliases)
         parts.append(f"validation_alias=AliasChoices({choices})")
@@ -488,6 +484,14 @@ def _render_field(
         DefaultStrategy.LITERAL,
     ) and isinstance(f.default.literal, list | tuple | dict | set):
         rendered = _reflow_long_literal_kwarg(rendered, f.default.literal)
+    if extra:
+        # A field carrying both markers overflows 88 columns on its own line,
+        # and `ruff format` would split the dict downstream — which rewrites
+        # the generated region and reports it as regeneration drift. Split it
+        # here instead, the same way the formatter would.
+        rendered = _reflow_long_literal_kwarg(
+            rendered, extra, prefixes=("json_schema_extra=",)
+        )
     return _suppress_unwrappable_overflow(rendered)
 
 

@@ -10,6 +10,7 @@ from django_aqueduct.codegen.renderer import ModelRenderer
 from django_aqueduct.discovery.ir import (
     Default,
     DefaultStrategy,
+    DiscoveryMethod,
     Provenance,
     SettingField,
     TypeRef,
@@ -571,6 +572,29 @@ def _promote_urls(fields):
     return fields
 
 
+def _add_combined_marker_field(fields):
+    """Append a DERIVED field supplied by a plugin: both markers in one dict.
+
+    Flat, that `json_schema_extra` overflows 88 columns, which `ruff format`
+    would split downstream — rewriting the generated region and reporting it
+    as regeneration drift on an app that never touched it.
+    """
+    fields.append(
+        SettingField(
+            name="FORUM_SEARCH_BACKEND",
+            type=TypeRef("Any"),
+            default=Default.derived(),
+            provenance=Provenance(
+                source_module="openedx_forum.settings.common",
+                method=DiscoveryMethod.OPENEDX_PLUGIN,
+                plugin_distribution="openedx-forum",
+            ),
+            owning_package="openedx-forum",
+        )
+    )
+    return fields
+
+
 @pytest.mark.parametrize(
     ("overridden", "transform"),
     [
@@ -582,6 +606,8 @@ def _promote_urls(fields):
         # --enrich-url-types adds the `from django_aqueduct import UrlStr` line.
         pytest.param(set(), _promote_urls, id="url-promotion"),
         pytest.param({"APP_BASE_URL"}, _promote_urls, id="url-promotion-overridden"),
+        # Both markers in one json_schema_extra overflow the line on their own.
+        pytest.param(set(), _add_combined_marker_field, id="combined-markers"),
     ],
 )
 def test_generated_output_is_clean_under_a_broad_ruleset(
