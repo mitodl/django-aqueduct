@@ -541,6 +541,10 @@ class PluginSettingsInspector(StaticModuleInspector):
                 method=DiscoveryMethod.OPENEDX_PLUGIN,
                 lineno=stmt.lineno,
                 conditional=conditional,
+                # Also recorded on the provenance, which attribution leaves
+                # alone -- ``owning_package`` above is overwritten in place
+                # when ``--attribute-packages`` runs.
+                plugin_distribution=self._owning_package,
             )
             fields[name] = discovered
 

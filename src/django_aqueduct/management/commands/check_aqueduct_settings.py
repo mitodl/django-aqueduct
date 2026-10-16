@@ -82,10 +82,10 @@ class Command(BaseCommand):
             if name.strip()
         } | set(cfg.parity_ignore)
 
-        model_values = self._model_values(model_ref)
+        model_values, withheld = self._model_values(model_ref)
         legacy_values = uppercase_settings(self._import(legacy_ref))
 
-        report = compare(model_values, legacy_values, ignore=ignore)
+        report = compare(model_values, legacy_values, ignore=ignore, withheld=withheld)
         if report.in_sync:
             self.stdout.write(self.style.SUCCESS(report.render()))
             return
@@ -95,8 +95,8 @@ class Command(BaseCommand):
             f"and legacy settings."
         )
 
-    def _model_values(self, model_ref: str) -> dict[str, Any]:
-        """Instantiate the model from ``module:Class`` and return model_dump()."""
+    def _model_values(self, model_ref: str) -> tuple[dict[str, Any], set[str]]:
+        """Instantiate ``module:Class``; return carried values and withheld names."""
         module_path, sep, class_name = model_ref.partition(":")
         if not sep or not module_path or not class_name:
             raise CommandError(
@@ -111,7 +111,23 @@ class Command(BaseCommand):
             instance = model_cls()
         except Exception as exc:  # noqa: BLE001
             raise CommandError(f"Could not instantiate {model_ref}: {exc}") from exc
-        return dict(instance.model_dump())
+        # What the adapter would actually inject, not the raw dump: a field
+        # whose default is withheld (an unresolved placeholder, or a plugin
+        # this install does not have) never reaches Django, so counting it as
+        # "missing in legacy" reports a divergence that does not exist -- and
+        # fails the command on exactly the deployments those rules target.
+        #
+        # The withheld names go back to compare() rather than just vanishing.
+        # Dropping them from the model side alone makes the comparison
+        # asymmetric: the overlay leaves such a setting to the base, so where
+        # the base *does* bind it the two agree, and an absence here would be
+        # reported as "missing_in_model" -- trading one false failure for
+        # another. A name the model never declared stays a real divergence.
+        from django_aqueduct.adapter import _carried_values  # noqa: PLC0415
+
+        carried = dict(_carried_values(instance))
+        withheld = set(instance.model_dump()) - set(carried)
+        return carried, withheld
 
     @staticmethod
     def _import(module_path: str) -> Any:

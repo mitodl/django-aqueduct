@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
-from django_aqueduct.adapter import UNRESOLVED_MARKER
+from django_aqueduct.adapter import PLUGIN_MARKER, UNRESOLVED_MARKER
 
 # Repo root — works both locally and in CI where cwd is the checkout directory
 _REPO_ROOT = Path(__file__).parent.parent
@@ -435,3 +435,71 @@ def test_pre_configure_runs_before_injection() -> None:
     assert scope["DEBUG"] is True
     assert scope["AQUEDUCT_MODEL"].SENTRY_DSN == "https://sentry.example/1"
     assert get_configured_model().SENTRY_DSN == "https://sentry.example/1"
+
+
+class _PluginSettings(BaseSettings):
+    """A model whose defaults come from two plugins, one of them absent.
+
+    `pydantic` stands in for an installed plugin distribution and
+    `aqueduct-no-such-plugin` for one the deployment does not install. The
+    marker names a distribution rather than an entry-point group so the answer
+    does not depend on whether the LMS or the CMS is booting.
+    """
+
+    PRESENT_SETTING: Any = Field(
+        default="from-installed-plugin",
+        json_schema_extra={PLUGIN_MARKER: "pydantic"},
+    )
+    ABSENT_SETTING: bool = Field(
+        default=True,
+        json_schema_extra={PLUGIN_MARKER: "aqueduct-no-such-plugin"},
+    )
+    PROJECT_SETTING: str = Field(default="from-project")
+
+
+def test_absent_plugins_default_is_not_injected():
+    """Regression for MITX_REDIRECT_ENABLED leaking into deployments.
+
+    One generated model serves several deployments with different plugin sets.
+    A plugin default is a LITERAL, so the unresolved-placeholder rule does not
+    touch it; without this, a deployment that does not install the plugin was
+    told the plugin is enabled.
+    """
+    from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
+
+    scope: dict = {}
+    configure_django_settings(_PluginSettings, scope=scope, base={"DEBUG": False})
+
+    assert "ABSENT_SETTING" not in scope
+    # The installed plugin's default still applies, and a non-plugin field is
+    # untouched -- the rule keys on the plugin, not on being plugin-shaped.
+    assert scope["PRESENT_SETTING"] == "from-installed-plugin"
+    assert scope["PROJECT_SETTING"] == "from-project"
+
+
+def test_absent_plugins_field_still_binds_from_a_source(monkeypatch):
+    """Only the *default* is withheld; the field itself still works.
+
+    Declaring the field is what lets the env source bind it at all, and an
+    operator setting the variable has stated an intent the absent plugin does
+    not override.
+    """
+    from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
+
+    monkeypatch.setenv("ABSENT_SETTING", "false")
+    scope: dict = {}
+    configure_django_settings(_PluginSettings, scope=scope, base={"DEBUG": False})
+
+    assert scope["ABSENT_SETTING"] is False
+
+
+def test_absent_plugins_default_defers_to_a_base_that_binds_it():
+    """A base that does bind the name keeps its own value, not the model's."""
+    from django_aqueduct.adapter import configure_django_settings  # noqa: PLC0415
+
+    scope: dict = {}
+    configure_django_settings(
+        _PluginSettings, scope=scope, base={"ABSENT_SETTING": "from-base"}
+    )
+
+    assert scope["ABSENT_SETTING"] == "from-base"

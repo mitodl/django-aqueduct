@@ -51,6 +51,7 @@ class ParityReport:
 
     divergences: list[Divergence] = field(default_factory=list)
     ignored: list[str] = field(default_factory=list)
+    withheld: list[str] = field(default_factory=list)
 
     @property
     def in_sync(self) -> bool:
@@ -61,12 +62,23 @@ class ParityReport:
         """Return a human-readable multi-line report."""
         if self.in_sync:
             suffix = f" ({len(self.ignored)} ignored)" if self.ignored else ""
-            return f"Model and legacy settings are in parity{suffix}."
+            return f"Model and legacy settings are in parity{suffix}.{self._withheld()}"
         lines = [f"{len(self.divergences)} divergence(s):"]
         lines.extend(f"  - {d.describe()}" for d in self.divergences)
         if self.ignored:
             lines.append(f"Ignored {len(self.ignored)} key(s): {sorted(self.ignored)}")
+        if self.withheld:
+            lines.append(self._withheld().lstrip())
         return "\n".join(lines)
+
+    def _withheld(self) -> str:
+        """Render the withheld-key note, or an empty string when there are none."""
+        if not self.withheld:
+            return ""
+        return (
+            f" Not compared: {len(self.withheld)} key(s) the model declares but "
+            f"withholds a value for: {sorted(self.withheld)}"
+        )
 
 
 def compare(
@@ -74,6 +86,7 @@ def compare(
     legacy_values: dict[str, Any],
     *,
     ignore: set[str] | None = None,
+    withheld: set[str] | None = None,
 ) -> ParityReport:
     """Compare *model_values* against *legacy_values*, returning a report.
 
@@ -81,6 +94,15 @@ def compare(
     mismatches. Keys in *ignore* (deliberate policy divergences, e.g. a setting
     the migration intentionally made required) are recorded as ignored rather
     than flagged.
+
+    *withheld* names settings the model *declares* but supplies no value for —
+    an unresolved placeholder, or a default belonging to a plugin this install
+    does not have. The adapter leaves those to the base, so the model makes no
+    claim about them and they cannot diverge from one; they are dropped from
+    both sides rather than reported as missing on either. This has to be passed
+    separately because the names are, by construction, absent from
+    *model_values* — indistinguishable there from a setting the model never
+    declared at all, which is still a genuine ``missing_in_model``.
 
     A dict-valued setting is compared with :func:`_dict_subset_matches`
     rather than strict equality: *legacy_values* is typically read from
@@ -96,14 +118,21 @@ def compare(
         model_values: The model's resolved settings (e.g. ``model_dump()``).
         legacy_values: The legacy module's UPPERCASE settings.
         ignore: Names to exclude from divergence reporting.
+        withheld: Names the model declares without supplying a value for.
 
     Returns:
         A :class:`ParityReport`.
     """
     ignored_names = ignore or set()
-    report = ParityReport()
+    # An explicit --ignore still wins: it is the operator's own call, and a
+    # name listed there should read back as ignored, not as withheld.
+    withheld_names = (withheld or set()) - ignored_names
+    report = ParityReport(withheld=sorted(withheld_names))
 
-    all_names = set(model_values) | set(legacy_values)
+    # Reported in full above rather than only where a side happens to carry
+    # the name: a withheld field neither side binds is still a setting this
+    # run did not check, and silence about it reads as "checked and fine".
+    all_names = (set(model_values) | set(legacy_values)) - withheld_names
     for name in sorted(all_names):
         if name in ignored_names:
             report.ignored.append(name)

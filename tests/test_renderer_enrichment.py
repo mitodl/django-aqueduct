@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import ast
 
-from django_aqueduct.adapter import UNRESOLVED_MARKER
+from django_aqueduct.adapter import PLUGIN_MARKER, UNRESOLVED_MARKER
 from django_aqueduct.codegen.dict_schema import TypedDictDef, TypedDictField
 from django_aqueduct.codegen.renderer import ModelRenderer
 from django_aqueduct.discovery.ir import (
     Constraints,
     Default,
+    DiscoveryMethod,
     ImportSpec,
     Provenance,
     SettingField,
@@ -196,3 +197,70 @@ def test_only_unresolved_strategies_carry_the_marker():
         "A_REDACTED": False,
         "A_LITERAL_NONE": False,
     }
+
+
+def _plugin_field(name, package, **kwargs):
+    return SettingField(
+        name=name,
+        type=TypeRef("Any"),
+        default=kwargs.pop("default", Default.literal_(True)),
+        provenance=Provenance(
+            source_module="m",
+            method=DiscoveryMethod.OPENEDX_PLUGIN,
+            plugin_distribution=package,
+        ),
+        owning_package=package,
+        **kwargs,
+    )
+
+
+def test_plugin_field_records_the_distribution_that_supplies_it():
+    src = ModelRenderer(
+        [_plugin_field("MITX_REDIRECT_ENABLED", "openedx-companion-auth")]
+    ).render()
+    # Quoting is asserted exactly: the key and the value are produced by
+    # different code paths, and a mixed pair would ship into generated files.
+    assert f'json_schema_extra={{"{PLUGIN_MARKER}": "openedx-companion-auth"}}' in src
+    ast.parse(src)
+
+
+def test_non_plugin_field_records_no_distribution():
+    # Attribution alone must not mark a field: owning_package is populated for
+    # project settings too, and only a plugin_settings() default is withheld
+    # when its supplier is missing.
+    f = _field("SITE_NAME", base="str", default=Default.literal_("x"))
+    f.owning_package = "some-distribution"
+    assert PLUGIN_MARKER not in ModelRenderer([f]).render()
+
+
+def test_a_derived_plugin_field_carries_both_markers_in_one_dict():
+    """Two kwargs would be a TypeError; they must merge into one mapping."""
+    src = ModelRenderer(
+        [
+            _plugin_field(
+                "FORUM_SEARCH_BACKEND", "openedx-forum", default=Default.derived()
+            )
+        ]
+    ).render()
+    assert src.count("json_schema_extra=") == 1
+    assert PLUGIN_MARKER in src
+    assert UNRESOLVED_MARKER in src
+    ast.parse(src)
+
+
+def test_marker_survives_package_attribution():
+    """The marker must not be read off a field attribution rewrites.
+
+    `--attribute-packages` reassigns every field's ``owning_package`` in
+    place, usually to the sentinel ``"project"`` for a plugin setting no rule
+    matches. Sourcing the marker from there would name a distribution that can
+    never be installed, so the adapter would withhold the default on *every*
+    deployment -- including the ones that do install the plugin. A silent
+    false negative is the worst failure mode this feature has.
+    """
+    f = _plugin_field("MITX_REDIRECT_ENABLED", "openedx-companion-auth")
+    f.owning_package = "project"  # what attribution does to it
+
+    src = ModelRenderer([f]).render()
+    assert f'json_schema_extra={{"{PLUGIN_MARKER}": "openedx-companion-auth"}}' in src
+    assert '"project"' not in src
