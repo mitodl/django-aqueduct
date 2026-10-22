@@ -327,13 +327,22 @@ def _wrap_call(
 #: because the ordinary idiom for an optional Django setting is
 #: ``getattr(settings, NAME, fallback)``, which a present ``None`` defeats.
 #:
-#: ``REDACTED`` is deliberately absent.  There *is* a static assignment — only
-#: its value is withheld — so the base binds the name and the overlay defers to
-#: it.  Dropping it instead would turn an unsupplied secret into an
-#: ``AttributeError`` at some unrelated read site rather than a visible ``None``.
+#: ``REDACTED`` is absent.  There *is* a static assignment — only its value is
+#: withheld — so the base binds the name and the overlay defers to it.  Dropping
+#: it instead would turn an unsupplied secret into an ``AttributeError`` at some
+#: unrelated read site rather than a visible ``None``.  The exception is a
+#: secret assigned inside a conditional: the base binds it on one branch only,
+#: so :func:`_is_unresolved` marks it like any other conditional.
 _UNRESOLVED_STRATEGIES = frozenset(
     {DefaultStrategy.DERIVED, DefaultStrategy.RUNTIME_ONLY}
 )
+
+
+def _is_unresolved(f: SettingField) -> bool:
+    """Whether *f*'s rendered default stands for "no value was determined"."""
+    if f.default.strategy in _UNRESOLVED_STRATEGIES:
+        return True
+    return f.default.strategy is DefaultStrategy.REDACTED and f.provenance.conditional
 
 
 def _render_default_expr(f: SettingField) -> tuple[str, str]:
@@ -431,7 +440,7 @@ def _render_field(
 
     parts = [default_kwarg]
     extra: dict[str, object] = {}
-    if f.default.strategy in _UNRESOLVED_STRATEGIES:
+    if _is_unresolved(f):
         extra[UNRESOLVED_MARKER] = True
     if f.provenance.plugin_distribution:
         # Records *whose* default this is, so the adapter can decline to apply
