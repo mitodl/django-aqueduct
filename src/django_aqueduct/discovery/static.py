@@ -678,14 +678,24 @@ class StaticModuleInspector:
                 provenance=prov,
             )
 
-        # Redaction takes precedence: never emit an observed/secret value. A
-        # required secret still renders REQUIRED (enforced, no value written);
-        # otherwise it is optional-None.
+        # Redaction takes precedence: never emit an observed/secret value. An
+        # unconditionally required secret still renders REQUIRED (enforced, no
+        # value written); otherwise it is optional-None. The value's type,
+        # which reveals nothing secret, still types the field: a secret-looking
+        # name can hold a toggle or a list, and `str` would read env "false" as
+        # truthy. A conditional secret is not required, since its branch may not
+        # run; the renderer marks it unresolved so it stays absent, not None.
         if looks_secret(name):
-            type_ref = (
-                reader.type_ref if reader else TypeRef("str", needs_refinement=True)
-            )
-            if reader and reader.required:
+            if reader:
+                type_ref = reader.type_ref
+                if reader.default_node is not None:
+                    fallback, _ = self._default_for(
+                        reader.default_node, imports, source
+                    )
+                    type_ref = self._reader_type_for_default(type_ref, fallback)
+            else:
+                type_ref = self._value_type(value)
+            if reader and reader.required and not conditional:
                 return field(type_ref, Default.required(), required=True)
             return field(type_ref.with_optional(), Default.redacted())
 

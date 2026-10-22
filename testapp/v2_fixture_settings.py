@@ -77,3 +77,18 @@ if DEBUG:
         return NESTED_LOCAL
 else:
     CACHE_BACKEND = "redis"
+
+# ---- secret-like names: the value is withheld, its type is not ----
+# A secret-looking name can hold a toggle or a structure rather than a
+# credential, so its value's type types the field like any other setting.
+
+ENABLE_PASSWORD_ADMIN = False
+PASSWORD_VALIDATORS = [{"NAME": "MinimumLengthValidator"}]
+SMTP_PASSWORD = "withheld-literal"
+API_TOKEN = None
+ENABLE_PASSWORD_RESET = os.environ.get("ENABLE_PASSWORD_RESET", False)
+
+# ---- conditional secret: absent, not None, when its branch doesn't run ----
+if DEBUG:
+    ALLOW_CREDENTIALS = True
+    DB_PASSWORD = os.environ["DB_PASSWORD"]

@@ -33,7 +33,13 @@ class AqueductSettings(BaseSettings):
     ALLOWED_HOSTS: Annotated[list[Any], NoDecode] = Field(
         default_factory=lambda: ["localhost", "127.0.0.1"]
     )
+    ALLOW_CREDENTIALS: bool | None = Field(
+        default=None, json_schema_extra={"aqueduct_unresolved": True}
+    )  # REDACTED: name looks secret-like — set via a source, not here
     ALT_PRICE: Any = Field(default_factory=lambda: Dec("1.50"))  # refine type
+    API_TOKEN: Any = Field(
+        default=None
+    )  # REDACTED: name looks secret-like — set via a source, not here
     APP_BASE_URL: str = Field(..., validation_alias=AliasChoices("APP_BASE_URL"))
     CACHE_BACKEND: Any = Field(
         default=None, json_schema_extra={"aqueduct_unresolved": True}
@@ -44,11 +50,22 @@ class AqueductSettings(BaseSettings):
         description="mitol EnvParser's get_list_of_str reader must be typed list[str] (and get\nNoDecode + the container decoder), not fall through to Any.",  # noqa: E501
     )
     DATA_DIR: pathlib.Path = Field(default_factory=lambda: pathlib.Path("/var/data"))
+    DB_PASSWORD: str | None = Field(
+        default=None,
+        json_schema_extra={"aqueduct_unresolved": True},
+        validation_alias=AliasChoices("DB_PASSWORD"),
+    )  # REDACTED: name looks secret-like — set via a source, not here
     DEBUG: bool = Field(default=False)
     DEFAULT_PRICE: decimal.Decimal = Field(default_factory=lambda: Decimal("9.99"))
     DERIVED_URL: Any = Field(
         default=None, json_schema_extra={"aqueduct_unresolved": True}
     )  # DERIVED: reproduce in a @model_validator (conditional/computed value)
+    ENABLE_PASSWORD_ADMIN: bool | None = Field(
+        default=None
+    )  # REDACTED: name looks secret-like — set via a source, not here
+    ENABLE_PASSWORD_RESET: bool | None = Field(
+        default=None, validation_alias=AliasChoices("ENABLE_PASSWORD_RESET")
+    )  # REDACTED: name looks secret-like — set via a source, not here
     EXTRA_HOST: str | None = Field(
         default=None,
         validation_alias=AliasChoices("EXTRA_HOST"),
@@ -66,6 +83,9 @@ class AqueductSettings(BaseSettings):
         description="os.getenv with a default → optional with that default.",
     )
     MAX_CONNECTIONS: int = Field(default=100)
+    PASSWORD_VALIDATORS: Annotated[list[Any] | None, NoDecode] = Field(
+        default=None
+    )  # REDACTED: name looks secret-like — set via a source, not here
     POOL_SIZE: Any = Field(default_factory=lambda: int("10"))  # refine type
     PRAGMA_ABOVE: int = Field(
         default=1, description="Real description above a standalone pragma line."
@@ -84,6 +104,9 @@ class AqueductSettings(BaseSettings):
         default_factory=lambda: datetime.timedelta(days=14)
     )
     SITE_NAME: str = Field(default="My Django App")
+    SMTP_PASSWORD: str | None = Field(
+        default=None
+    )  # REDACTED: name looks secret-like — set via a source, not here
     TZ_NAME: str = Field(default="UTC")
     XML_PREAMBLE: str = Field(
         default="<?xml version='1.0'?>",
@@ -92,7 +115,9 @@ class AqueductSettings(BaseSettings):
     # <<< aqueduct:generated:fields
 
     # >>> aqueduct:generated:container_decoders
-    @field_validator("ALLOWED_HOSTS", "CORS_ALLOWED_ORIGINS", mode="before")
+    @field_validator(
+        "ALLOWED_HOSTS", "CORS_ALLOWED_ORIGINS", "PASSWORD_VALIDATORS", mode="before"
+    )
     @classmethod
     def _aqueduct_decode_list_fields(cls, value: object) -> object:
         """Parse a list from a JSON, Python-literal, or comma-separated env string."""

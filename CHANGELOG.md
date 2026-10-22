@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A secret-looking setting is typed from its value.** The value is still
+  withheld, but its type now types the field (`bool | None`,
+  `list[Any] | None`) instead of always `str | None`, for a literal and for an
+  env reader's fallback alike; with no inferable type it is `Any`, as for any
+  other setting. edx-platform's `ENABLE_CHANGE_USER_PASSWORD_ADMIN = False`
+  read env `false` as the truthy string `"false"`, and
+  `AUTH_PASSWORD_VALIDATORS` rejected its own YAML list.
+- **A conditionally assigned secret is left absent when unset.** A
+  secret-looking name assigned only inside an `if` rendered as a plain
+  `REDACTED` field, so when the branch did not run the overlay contributed
+  `None` for a name the base never binds. edx-platform's
+  `CORS_ALLOW_CREDENTIALS`, assigned under `if ENABLE_CORS_HEADERS:`, reached
+  Django as `None` and failed django-cors-headers' `corsheaders.E003` bool
+  check. It stays `REDACTED` and carries the unresolved marker, and a required
+  env read inside a conditional is no longer required.
+
 ## [0.15.0]
 
 ### Added

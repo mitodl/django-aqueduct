@@ -24,7 +24,7 @@ def _field(name, base="Any", **kwargs) -> SettingField:
         name=name,
         type=TypeRef(base),
         default=kwargs.pop("default", Default.literal_(None)),
-        provenance=Provenance(source_module="m"),
+        provenance=kwargs.pop("provenance", Provenance(source_module="m")),
         **kwargs,
     )
 
@@ -176,25 +176,29 @@ def test_only_unresolved_strategies_carry_the_marker():
     """The marker distinguishes a placeholder None from a real None default.
 
     All four strategies below render ``default=None``, so the rendered *value*
-    cannot tell the overlay which names may be left absent. Only DERIVED and
+    cannot tell the overlay which names may be left absent. DERIVED and
     RUNTIME_ONLY mean "no value was determined"; REDACTED has a static
-    assignment whose value is merely withheld, and a literal ``None`` is a
+    assignment whose value is merely withheld, unless that assignment is
+    conditional and the base may never bind it; a literal ``None`` is a
     genuine default.
     """
+    conditional = Provenance(source_module="m", conditional=True)
     marked = {
         name: UNRESOLVED_MARKER
-        in ModelRenderer([_field(name, base="Any", default=default)]).render()
-        for name, default in (
-            ("A_DERIVED", Default.derived()),
-            ("A_RUNTIME_ONLY", Default.runtime_only()),
-            ("A_REDACTED", Default.redacted()),
-            ("A_LITERAL_NONE", Default.literal_(None)),
+        in ModelRenderer([_field(name, default=default, **kwargs)]).render()
+        for name, default, kwargs in (
+            ("A_DERIVED", Default.derived(), {}),
+            ("A_RUNTIME_ONLY", Default.runtime_only(), {}),
+            ("A_REDACTED", Default.redacted(), {}),
+            ("A_CONDITIONAL_REDACTED", Default.redacted(), {"provenance": conditional}),
+            ("A_LITERAL_NONE", Default.literal_(None), {}),
         )
     }
     assert marked == {
         "A_DERIVED": True,
         "A_RUNTIME_ONLY": True,
         "A_REDACTED": False,
+        "A_CONDITIONAL_REDACTED": True,
         "A_LITERAL_NONE": False,
     }
 

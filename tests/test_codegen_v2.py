@@ -313,6 +313,35 @@ def test_render_is_deterministic(fields):
     assert a == b
 
 
+@pytest.mark.parametrize(
+    ("name", "annotation"),
+    [
+        ("ENABLE_PASSWORD_ADMIN", "bool | None"),
+        ("PASSWORD_VALIDATORS", "list[Any] | None"),
+        # The env reader's fallback types it, as for a non-secret reader.
+        ("ENABLE_PASSWORD_RESET", "bool | None"),
+        # No inferable type: Any, as for a non-secret setting.
+        ("API_TOKEN", "Any"),
+    ],
+)
+def test_secret_named_literal_is_typed_from_its_value(fields, name, annotation):
+    # A `str` annotation would read env "false" as truthy and reject a YAML list.
+    f = _by_name(fields)[name]
+    assert f.default.strategy is DefaultStrategy.REDACTED
+    assert f.type.render() == annotation
+
+
+def test_secret_named_literal_value_is_not_emitted(fields):
+    assert "withheld-literal" not in ModelRenderer(fields).render()
+
+
+def test_conditional_secret_is_not_required(fields):
+    # Its branch may not run, so nothing guarantees a value to enforce.
+    f = _by_name(fields)["DB_PASSWORD"]
+    assert f.default.strategy is DefaultStrategy.REDACTED
+    assert f.required is False
+
+
 def test_no_secret_value_in_output(fields, monkeypatch):
     # Even with a real value in the environment, static discovery never reads
     # it, so it can never appear in the generated file.
